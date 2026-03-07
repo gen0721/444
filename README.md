@@ -1,4 +1,4 @@
-# 🚀 MARKE  T — Telegram Mini App Marketplace
+# 🚀 MA  RKE  T — Telegram Mini App Marketplace
 
 Полноценный маркетплейс для цифровых товаров с эскроу-системой, CryptoBot оплатой и панелью администратора.
 
