@@ -5,17 +5,17 @@ import { IC } from '../components/Icons'
 import toast from 'react-hot-toast'
 import { io } from 'socket.io-client'
 
-// ─── ICE Config: STUN + public TURN for NAT traversal ────────────────────────
+// ─── ICE Config: STUN + надёжные TURN серверы ────────────────────────────────
 const ICE_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
-    { urls: 'turn:openrelay.metered.ca:80',   username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443',  username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: 'turn:a.relay.metered.ca:80',     username: 'free', credential: 'free' },
+    { urls: 'turn:a.relay.metered.ca:80?transport=tcp', username: 'free', credential: 'free' },
+    { urls: 'turn:a.relay.metered.ca:443',    username: 'free', credential: 'free' },
+    { urls: 'turn:a.relay.metered.ca:443?transport=tcp', username: 'free', credential: 'free' },
+    { urls: 'turn:numb.viagenie.ca', username: 'webrtc@live.com', credential: 'muazkh' },
   ],
   iceCandidatePoolSize: 10,
   iceTransportPolicy: 'all',
@@ -70,6 +70,7 @@ export default function VoiceRoomsPage() {
   const [participants, setParticipants]= useState([])
   const [muted,        setMuted]       = useState(false)
   const [showCreate,   setShowCreate]  = useState(false)
+  const [showMicTest,  setShowMicTest]  = useState(false)
   const [pinModal,     setPinModal]    = useState(null)
   const [pinInput,     setPinInput]    = useState('')
   const [speaking,     setSpeaking]    = useState({})
@@ -221,20 +222,46 @@ export default function VoiceRoomsPage() {
 
   // ── Microphone ────────────────────────────────────────────────────────────
   async function getStream() {
-    if (localStream.current) return localStream.current
+    if (localStream.current) {
+      // Check if tracks are still alive
+      const alive = localStream.current.getTracks().some(t => t.readyState === 'live')
+      if (alive) return localStream.current
+      // Tracks died — clean up and re-acquire
+      localStream.current.getTracks().forEach(t => t.stop())
+      localStream.current = null
+    }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        video: false,
-      })
+      // Try best quality first, fallback to basic
+      let stream
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            sampleRate: 48000,
+            channelCount: 1,
+          },
+          video: false,
+        })
+      } catch {
+        // Fallback: simplest possible request
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      }
       localStream.current = stream
       stream.getAudioTracks().forEach(t => { t.enabled = !mutedRef.current })
+      console.log('✅ Microphone acquired:', stream.getAudioTracks()[0]?.label)
       return stream
     } catch (e) {
       console.error('getUserMedia failed:', e)
-      if (e.name === 'NotAllowedError')  toast.error('Разрешите доступ к микрофону в браузере')
-      else if (e.name === 'NotFoundError') toast.error('Микрофон не найден')
-      else toast.error('Ошибка микрофона: ' + e.message)
+      if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError')
+        toast.error('Разрешите доступ к микрофону в настройках браузера/телефона')
+      else if (e.name === 'NotFoundError' || e.name === 'DevicesNotFoundError')
+        toast.error('Микрофон не найден на устройстве')
+      else if (e.name === 'NotReadableError')
+        toast.error('Микрофон занят другим приложением')
+      else
+        toast.error('Ошибка микрофона: ' + e.message)
       return null
     }
   }
@@ -303,8 +330,33 @@ export default function VoiceRoomsPage() {
     }
 
     pc.oniceconnectionstatechange = () => {
-      console.log(`[${remoteId.slice(0,6)}] ICE: ${pc.iceConnectionState}`)
+      const s = pc.iceConnectionState
+      console.log(`[${remoteId.slice(0,6)}] ICE: ${s}`)
+      if (s === 'failed') {
+        // ICE restart immediately on failure
+        console.log(`🔄 ICE failed — forcing restart for ${remoteId.slice(0,6)}`)
+        scheduleReconnect(remoteId)
+      }
+      if (s === 'disconnected') {
+        // Wait 3s then restart if not recovered
+        setTimeout(() => {
+          if (peerConns.current[remoteId]?.iceConnectionState === 'disconnected') {
+            scheduleReconnect(remoteId)
+          }
+        }, 3000)
+      }
     }
+
+    // Keep-alive: send ping via data channel to prevent idle disconnects
+    try {
+      const dc = pc.createDataChannel('keepalive', { ordered: false, maxRetransmits: 0 })
+      dc.onopen = () => {
+        const ping = setInterval(() => {
+          if (dc.readyState === 'open') { try { dc.send('ping') } catch {} }
+          else clearInterval(ping)
+        }, 5000)
+      }
+    } catch {}
 
     return pc
   }
@@ -430,20 +482,53 @@ export default function VoiceRoomsPage() {
     }
   }
 
+  // ── Audio unlock (needed for mobile/Telegram WebApp) ────────────────────
+  function unlockAudio() {
+    // Create and immediately close a silent AudioContext to unlock autoplay
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)()
+      const buf = ctx.createBuffer(1, 1, 22050)
+      const src = ctx.createBufferSource()
+      src.buffer = buf
+      src.connect(ctx.destination)
+      src.start(0)
+      setTimeout(() => ctx.close(), 100)
+    } catch {}
+  }
+
   // ── Audio element ─────────────────────────────────────────────────────────
   function mountAudio(socketId, stream) {
+    unlockAudio()
     const id = `va-${socketId}`
     let el = document.getElementById(id)
     if (!el) {
       el = document.createElement('audio')
       el.id = id
       el.autoplay = true
+      el.muted = false
+      el.volume = 1.0
       el.setAttribute('playsinline', '')
+      el.setAttribute('webkit-playsinline', '')
       el.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none'
       document.body.appendChild(el)
     }
     el.srcObject = stream
-    el.play().catch(err => console.warn('audio.play() blocked:', err.message))
+    // Retry play with delays — mobile browsers block immediate play
+    const tryPlay = (attempt = 1) => {
+      el.play().then(() => {
+        console.log(`✅ Audio playing for ${socketId.slice(0,6)}`)
+      }).catch(err => {
+        console.warn(`audio.play() attempt ${attempt} blocked:`, err.message)
+        if (attempt < 5) setTimeout(() => tryPlay(attempt + 1), 500 * attempt)
+        else {
+          // Last resort: user gesture required
+          toast('Нажмите экран для активации звука 🔊', { icon: '🔊', duration: 4000 })
+          const unlock = () => { el.play().catch(() => {}); document.removeEventListener('touchstart', unlock) }
+          document.addEventListener('touchstart', unlock, { once: true })
+        }
+      })
+    }
+    tryPlay()
   }
 
   // ── Voice activity visualiser ─────────────────────────────────────────────
@@ -585,9 +670,14 @@ export default function VoiceRoomsPage() {
               WebRTC P2P{activeRoom ? ` · ${QUALITY_META[myQuality]?.label}` : ''}
             </div>
           </div>
-          <button onClick={() => setShowCreate(true)} style={{ flexShrink: 0, padding: '8px 14px', borderRadius: '100px', cursor: 'pointer', background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.35)', color: '#22d3ee', fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '11px', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <IC.Plus s={13} c="#22d3ee" /> Создать
-          </button>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button onClick={() => setShowMicTest(true)} style={{ flexShrink: 0, padding: '8px 12px', borderRadius: '100px', cursor: 'pointer', background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.35)', color: '#a78bfa', fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '11px', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              🎤 Тест
+            </button>
+            <button onClick={() => setShowCreate(true)} style={{ flexShrink: 0, padding: '8px 14px', borderRadius: '100px', cursor: 'pointer', background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.35)', color: '#22d3ee', fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '11px', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <IC.Plus s={13} c="#22d3ee" /> Создать
+            </button>
+          </div>
         </div>
       </div>
 
@@ -634,6 +724,10 @@ export default function VoiceRoomsPage() {
           onClose={() => setShowCreate(false)}
           onCreated={room => { setShowCreate(false); loadRooms(); handleJoinClick(room) }}
         />
+      )}
+
+      {showMicTest && (
+        <MicTestModal onClose={() => setShowMicTest(false)} />
       )}
 
       {pinModal && (
@@ -838,6 +932,206 @@ function CreateModal({ onClose, onCreated }) {
           {loading
             ? <div style={{ width: 16, height: 16, borderRadius: '50%', border: '2px solid rgba(34,211,238,0.25)', borderTop: '2px solid #22d3ee', animation: 'rotateSpin 0.7s linear infinite' }} />
             : '🎙 Создать'}
+        </button>
+      </div>
+    </Sheet>
+  )
+}
+
+
+// ─── Mic Test Modal ───────────────────────────────────────────────────────────
+function MicTestModal({ onClose }) {
+  const [phase, setPhase]   = useState('idle')   // idle | requesting | recording | playing | done | error
+  const [volume, setVolume] = useState(0)
+  const [countdown, setCd]  = useState(3)
+  const [errMsg, setErrMsg] = useState('')
+  const streamRef   = useRef(null)
+  const recorderRef = useRef(null)
+  const chunksRef   = useRef([])
+  const analyserRef = useRef(null)
+  const rafRef      = useRef(null)
+  const cdRef       = useRef(null)
+
+  // Volume visualiser
+  function startVis(stream) {
+    try {
+      const ctx  = new (window.AudioContext || window.webkitAudioContext)()
+      const src  = ctx.createMediaStreamSource(stream)
+      const node = ctx.createAnalyser()
+      node.fftSize = 256
+      src.connect(node)
+      analyserRef.current = { ctx, node }
+      const buf = new Uint8Array(node.frequencyBinCount)
+      const tick = () => {
+        node.getByteFrequencyData(buf)
+        const avg = buf.reduce((a,b) => a+b, 0) / buf.length
+        setVolume(Math.min(100, avg * 2.5))
+        rafRef.current = requestAnimationFrame(tick)
+      }
+      tick()
+    } catch {}
+  }
+
+  function stopVis() {
+    cancelAnimationFrame(rafRef.current)
+    try { analyserRef.current?.ctx.close() } catch {}
+    analyserRef.current = null
+    setVolume(0)
+  }
+
+  function cleanup() {
+    stopVis()
+    clearInterval(cdRef.current)
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    streamRef.current = null
+  }
+
+  async function startTest() {
+    setPhase('requesting')
+    setErrMsg('')
+    try {
+      let stream
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          video: false,
+        })
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      }
+      streamRef.current = stream
+      setPhase('recording')
+      setCd(3)
+      startVis(stream)
+
+      // Countdown
+      let c = 3
+      cdRef.current = setInterval(() => {
+        c -= 1
+        setCd(c)
+        if (c <= 0) clearInterval(cdRef.current)
+      }, 1000)
+
+      // Record
+      chunksRef.current = []
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : ''
+      const rec = new MediaRecorder(stream, mimeType ? { mimeType } : {})
+      recorderRef.current = rec
+      rec.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+      rec.onstop = () => {
+        stopVis()
+        stream.getTracks().forEach(t => t.stop())
+        setPhase('playing')
+        const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' })
+        const url  = URL.createObjectURL(blob)
+        const audio = new Audio(url)
+        audio.play().catch(() => {
+          // Fallback: create element in DOM
+          const el = document.createElement('audio')
+          el.src = url
+          el.controls = true
+          el.style.cssText = 'display:block;width:100%;margin-top:8px'
+          el.id = 'mic-test-playback'
+          document.getElementById('mic-test-slot')?.appendChild(el)
+          el.play().catch(() => {})
+        })
+        audio.onended = () => { URL.revokeObjectURL(url); setPhase('done') }
+        audio.onerror = () => { setPhase('done') }
+      }
+
+      rec.start()
+      setTimeout(() => { if (recorderRef.current?.state === 'recording') recorderRef.current.stop() }, 3000)
+
+    } catch(e) {
+      cleanup()
+      const msg = e.name === 'NotAllowedError' ? 'Нет доступа к микрофону. Разрешите в настройках браузера.'
+                : e.name === 'NotFoundError'   ? 'Микрофон не найден.'
+                : e.name === 'NotReadableError' ? 'Микрофон занят другим приложением.'
+                : 'Ошибка: ' + e.message
+      setErrMsg(msg)
+      setPhase('error')
+    }
+  }
+
+  useEffect(() => () => cleanup(), [])
+
+  const bars = 20
+  const volBars = Math.round((volume / 100) * bars)
+
+  return (
+    <Sheet onClose={() => { cleanup(); onClose() }}>
+      <div style={{ fontFamily: 'var(--font-display)', fontSize: '17px', fontWeight: 700, color: '#a78bfa', marginBottom: '6px' }}>
+        🎤 ТЕСТ МИКРОФОНА
+      </div>
+      <div style={{ fontSize: '12px', color: 'var(--t3)', marginBottom: '24px', lineHeight: 1.5 }}>
+        Нажми «Начать» — запишем 3 секунды и сразу воспроизведём. Так узнаешь работает ли микрофон.
+      </div>
+
+      {/* Visualiser */}
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: '3px', height: '60px', marginBottom: '20px', padding: '8px', borderRadius: '14px', background: 'rgba(167,139,250,0.05)', border: '1px solid rgba(167,139,250,0.12)' }}>
+        {Array(bars).fill(0).map((_, i) => {
+          const active = i < volBars
+          const height = active ? Math.max(8, Math.round((volume / 100) * 44 * (0.5 + Math.random() * 0.5))) : 4
+          return (
+            <div key={i} style={{
+              width: '3px', borderRadius: '2px',
+              height: phase === 'recording' ? `${height}px` : '4px',
+              background: active ? '#a78bfa' : 'rgba(255,255,255,0.1)',
+              transition: 'height 0.08s ease, background 0.15s',
+            }}/>
+          )
+        })}
+      </div>
+
+      {/* Status */}
+      <div style={{ textAlign: 'center', marginBottom: '24px', minHeight: '48px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+        {phase === 'idle' && (
+          <span style={{ fontSize: '13px', color: 'var(--t3)' }}>Готов к записи</span>
+        )}
+        {phase === 'requesting' && (
+          <span style={{ fontSize: '13px', color: '#fbbf24' }}>⏳ Запрашиваем микрофон...</span>
+        )}
+        {phase === 'recording' && (
+          <>
+            <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#f87171', boxShadow: '0 0 8px #f87171', animation: 'glowPulse 1s ease-in-out infinite' }}/>
+            <span style={{ fontSize: '14px', fontWeight: 700, color: '#f87171', fontFamily: 'var(--font-display)' }}>
+              ● ЗАПИСЬ — {countdown}с
+            </span>
+            <span style={{ fontSize: '11px', color: 'var(--t3)' }}>Говорите что-нибудь...</span>
+          </>
+        )}
+        {phase === 'playing' && (
+          <span style={{ fontSize: '14px', color: '#4ade80', fontWeight: 700 }}>▶ Воспроизводим...</span>
+        )}
+        {phase === 'done' && (
+          <>
+            <span style={{ fontSize: '22px' }}>✅</span>
+            <span style={{ fontSize: '13px', color: '#4ade80', fontWeight: 600 }}>Микрофон работает!</span>
+          </>
+        )}
+        {phase === 'error' && (
+          <>
+            <span style={{ fontSize: '22px' }}>❌</span>
+            <span style={{ fontSize: '12px', color: '#f87171', textAlign: 'center', lineHeight: 1.5 }}>{errMsg}</span>
+          </>
+        )}
+      </div>
+
+      <div id="mic-test-slot"/>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '10px' }}>
+        <button className="btn btn-ghost btn-full" onClick={() => { cleanup(); onClose() }}
+          style={{ fontFamily: 'var(--font-display)', fontSize: '13px' }}>Закрыть</button>
+        <button className="btn btn-full"
+          disabled={phase === 'recording' || phase === 'requesting' || phase === 'playing'}
+          onClick={startTest}
+          style={{ fontFamily: 'var(--font-display)', fontSize: '13px', background: 'rgba(167,139,250,0.12)', border: '1px solid rgba(167,139,250,0.4)', color: '#a78bfa', opacity: (phase === 'recording' || phase === 'requesting' || phase === 'playing') ? 0.5 : 1 }}>
+          {phase === 'recording' ? `⏺ ${countdown}с...`
+           : phase === 'playing'  ? '▶ Слушаем...'
+           : phase === 'done' || phase === 'error' ? '🔁 Повторить'
+           : '🎤 Начать тест'}
         </button>
       </div>
     </Sheet>
