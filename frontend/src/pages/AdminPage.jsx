@@ -526,9 +526,12 @@ function BroadcastTab({ broadcasts, users, bcTitle, setBcTitle, bcText, setBcTex
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function BottomModal({ children, onClose, color = '#a78bfa' }) {
   return (
-    <div style={{ position:'fixed', inset:0, zIndex:200, display:'flex', flexDirection:'column', justifyContent:'flex-end' }} onClick={onClose}>
-      <div style={{ background:'rgba(6,8,17,0.98)', borderRadius:'20px 20px 0 0', padding:'20px 16px', paddingBottom:'calc(20px + env(safe-area-inset-bottom, 16px))', border:`1px solid ${color}25`, boxShadow:`0 -20px 60px rgba(0,0,0,0.8)` }}
-        onClick={e => e.stopPropagation()}>
+    <div style={{ position:'fixed', inset:0, zIndex:200, display:'flex', flexDirection:'column', background:'rgba(6,8,17,0.99)', backdropFilter:'blur(16px)' }}>
+      <div style={{ flex:1, display:'flex', flexDirection:'column', padding:'0 16px', paddingBottom:'calc(20px + env(safe-area-inset-bottom, 16px))', overflowY:'auto', animation:'slideUp 0.3s cubic-bezier(0.34,1.56,0.64,1)' }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'16px 0 20px' }}>
+          <div style={{ width:36, height:3, borderRadius:2, background:'rgba(255,255,255,0.1)' }}/>
+          <button onClick={onClose} style={{ background:'rgba(255,255,255,0.07)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:'10px', width:'32px', height:'32px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:'rgba(255,255,255,0.5)', fontSize:'16px' }}>✕</button>
+        </div>
         {children}
       </div>
     </div>
