@@ -79,8 +79,8 @@ async function migrate() {
       `CREATE INDEX IF NOT EXISTS "idx_chat_messages_chatId" ON "ChatMessages"("chatId", "createdAt" DESC)`,
       `CREATE INDEX IF NOT EXISTS "idx_chat_members_chatId" ON "ChatMembers"("chatId")`,
 
-      \`ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "deliveryData"    TEXT\`,
-      \`ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "sellerDelivered" BOOLEAN DEFAULT false\`,
+      `ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "deliveryData" TEXT`,
+      `ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "sellerDelivered" BOOLEAN DEFAULT false`,
     ];
 
     for (const sql of migrations) {
