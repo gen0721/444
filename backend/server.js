@@ -9,10 +9,13 @@ const jwt        = require('jsonwebtoken');
 const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server, {
-  cors: { origin: '*', methods: ['GET','POST'] },
+  cors: { origin: '*', methods: ['GET','POST'], credentials: true },
   transports: ['websocket','polling'],
-  pingTimeout:  60000,
-  pingInterval: 25000,
+  pingTimeout:  30000,
+  pingInterval: 10000,
+  upgradeTimeout: 10000,
+  maxHttpBufferSize: 1e6,
+  allowEIO3: true,
 });
 
 const sequelize = require('./db');
