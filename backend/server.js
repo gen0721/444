@@ -40,7 +40,7 @@ app.use('/api/deals',      require('./routes/deals'));
 app.use('/api/wallet',     require('./routes/wallet'));
 app.use('/api/admin',      require('./routes/admin'));
 app.use('/api/categories', require('./routes/categories'));
-app.use('/api/rooms',      require('./routes/rooms'));
+app.use('/api/rooms', require('./routes/rooms').router);
 app.use('/api/telegram',   require('./routes/telegram'));
 app.use('/api/chats',      require('./routes/chats'));
 
