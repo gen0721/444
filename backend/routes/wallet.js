@@ -1,0 +1,285 @@
+const express = require('express');
+const notify  = require('../utils/notify');
+const router  = express.Router();
+const https   = require('https');
+const { User, Transaction } = require('../models/index');
+const { auth, verifyCryptoBotWebhook } = require('../middleware/auth');
+const sequelize = require('../db');
+
+const CRYPTO_TOKEN = process.env.CRYPTO_BOT_TOKEN || process.env.CRYPTOBOT_TOKEN;
+
+function cryptoBot(method, body = {}) {
+  return new Promise((resolve, reject) => {
+    const data    = JSON.stringify(body);
+    const options = {
+      hostname: 'pay.crypt.bot',
+      path:     `/api/${method}`,
+      method:   'POST',
+      headers: {
+        'Crypto-Pay-API-Token': CRYPTO_TOKEN,
+        'Content-Type':         'application/json',
+        'Content-Length':       Buffer.byteLength(data),
+      },
+    };
+    const req = https.request(options, (res) => {
+      let buf = '';
+      res.on('data', c  => buf += c);
+      res.on('end',  () => {
+        try { resolve(JSON.parse(buf)); }
+        catch { resolve({ ok: false, error: { code: 0, name: 'ParseError' } }); }
+      });
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+const ASSET_MAP = { USDT: 'USDT', BTC: 'BTC', TON: 'TON', ETH: 'ETH', USDC: 'USDC' };
+const MIN_WITHDRAW = 2;
+
+// ─── POST /deposit ────────────────────────────────────────────────────────────
+router.post('/deposit', auth, async (req, res) => {
+  try {
+    const { amount, currency = 'USDT' } = req.body;
+    const amt = parseFloat(amount);
+    if (!amt || amt < 1) return res.status(400).json({ error: 'Минимальный депозит — $1' });
+
+    const asset = ASSET_MAP[currency] || 'USDT';
+    let payUrl = null, invoiceId = null;
+
+    if (CRYPTO_TOKEN) {
+      const inv = await cryptoBot('createInvoice', {
+        asset,
+        amount:          String(amt.toFixed(2)),
+        description:     `GIVIHUB пополнение — ${req.user.username || req.user.firstName || 'User'}`,
+        payload:         JSON.stringify({ userId: req.userId, type: 'deposit' }),
+        allow_comments:  false,
+        allow_anonymous: false,
+        expires_in:      3600,
+      });
+      if (inv.ok) {
+        payUrl    = inv.result.bot_invoice_url;
+        invoiceId = String(inv.result.invoice_id);
+      } else {
+        console.error('CryptoBot createInvoice error:', inv.error);
+        return res.status(500).json({ error: 'Не удалось создать счёт: ' + (inv.error?.name || 'Unknown') });
+      }
+    }
+
+    const tx = await Transaction.create({
+      userId:             req.userId,
+      type:               'deposit',
+      amount:             amt,
+      currency:           asset,
+      status:             CRYPTO_TOKEN ? 'pending' : 'completed',
+      description:        'Deposit via CryptoBot',
+      cryptoBotInvoiceId: invoiceId,
+      cryptoBotPayUrl:    payUrl,
+      balanceBefore:      parseFloat(req.user.balance),
+    });
+
+    if (!CRYPTO_TOKEN) {
+      // Dev mode — credit immediately
+      const t = await sequelize.transaction();
+      try {
+        const user   = await User.findByPk(req.userId, { transaction: t, lock: true });
+        const newBal = parseFloat(user.balance) + amt;
+        await user.update({
+          balance:        newBal,
+          totalDeposited: parseFloat(user.totalDeposited) + amt,
+        }, { transaction: t });
+        await tx.update({ status: 'completed', balanceAfter: newBal }, { transaction: t });
+        await t.commit();
+        notify.notifyDeposit(user, amt, asset).catch(() => {});
+        return res.json({ success: true, balance: newBal, tx, devMode: true });
+      } catch (e) { await t.rollback(); throw e; }
+    }
+
+    res.json({ success: true, payUrl, invoiceId, tx });
+  } catch (e) {
+    console.error('Deposit error:', e.message);
+    res.status(500).json({ error: 'Не удалось создать депозит' });
+  }
+});
+
+// ─── POST /webhook/cryptobot — VERIFIED CryptoBot callback ────────────────────
+router.post('/webhook/cryptobot', async (req, res) => {
+  try {
+    // Verify webhook signature to prevent fake payments
+    if (!verifyCryptoBotWebhook(req)) {
+      console.warn('CryptoBot webhook: invalid signature');
+      return res.status(401).json({ ok: false });
+    }
+
+    const { update_type, payload } = req.body;
+    if (update_type !== 'invoice_paid') return res.json({ ok: true });
+
+    const invoiceId = String(payload.invoice_id);
+    const tx        = await Transaction.findOne({ where: { cryptoBotInvoiceId: invoiceId } });
+    if (!tx || tx.status === 'completed') return res.json({ ok: true });
+
+    // Use DB transaction for atomicity
+    const dbTx = await sequelize.transaction();
+    try {
+      const user   = await User.findByPk(tx.userId, { transaction: dbTx, lock: true });
+      const amt    = parseFloat(tx.amount);
+      const newBal = parseFloat(user.balance) + amt;
+      await user.update({
+        balance:        newBal,
+        totalDeposited: parseFloat(user.totalDeposited) + amt,
+      }, { transaction: dbTx });
+      await tx.update({ status: 'completed', balanceAfter: newBal }, { transaction: dbTx });
+      await dbTx.commit();
+    } catch (e) { await dbTx.rollback(); throw e; }
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Webhook error:', e.message);
+    res.json({ ok: true });
+  }
+});
+
+// ─── POST /withdraw ───────────────────────────────────────────────────────────
+router.post('/withdraw', auth, async (req, res) => {
+  try {
+    const { amount, currency = 'USDT', address } = req.body;
+    const amt = parseFloat(amount);
+    if (!amt || amt < MIN_WITHDRAW)
+      return res.status(400).json({ error: `Минимальный вывод — $${MIN_WITHDRAW}` });
+
+    const asset    = ASSET_MAP[currency] || 'USDT';
+    const spendId  = `withdraw_${req.userId}_${Date.now()}`;
+
+    const recipientTgId = address
+      ? parseInt(address, 10)
+      : req.user.telegramId ? parseInt(req.user.telegramId, 10) : null;
+
+    if (!recipientTgId || isNaN(recipientTgId))
+      return res.status(400).json({ error: 'Не найден Telegram ID. Войдите через Telegram или укажите Telegram ID.' });
+
+    // ── Atomic balance deduct with DB transaction ──
+    const dbTx   = await sequelize.transaction();
+    let tx, prevBal, newBal;
+    try {
+      const user = await User.findByPk(req.userId, { transaction: dbTx, lock: true });
+      prevBal    = parseFloat(user.balance);
+      if (prevBal < amt) {
+        await dbTx.rollback();
+        return res.status(400).json({ error: 'Недостаточно средств' });
+      }
+      newBal = prevBal - amt;
+      await user.update({
+        balance:        newBal,
+        totalWithdrawn: parseFloat(user.totalWithdrawn) + amt,
+      }, { transaction: dbTx });
+      tx = await Transaction.create({
+        userId:        req.userId,
+        type:          'withdrawal',
+        amount:        -amt,
+        currency:      asset,
+        status:        'pending',
+        description:   `Вывод ${amt} ${asset} на TG ID ${recipientTgId}`,
+        balanceBefore: prevBal,
+        balanceAfter:  newBal,
+      }, { transaction: dbTx });
+      await dbTx.commit();
+    } catch (e) { await dbTx.rollback(); throw e; }
+
+    if (CRYPTO_TOKEN) {
+      try {
+        const transfer = await cryptoBot('transfer', {
+          user_id:  recipientTgId,
+          asset,
+          amount:   String(amt.toFixed(2)),
+          spend_id: spendId,
+          comment:  `GIVIHUB вывод ${amt} ${asset}`,
+          disable_send_notification: false,
+        });
+
+        if (transfer.ok) {
+          await tx.update({ status: 'completed', cryptoBotTransferId: String(transfer.result?.transfer_id || '') });
+          return res.json({
+            success:    true,
+            balance:    newBal,
+            transferId: transfer.result?.transfer_id,
+            message:    `✅ ${amt} ${asset} отправлено на ваш Telegram`,
+            tx,
+          });
+        } else {
+          // Rollback balance
+          const rollbackTx = await sequelize.transaction();
+          try {
+            const u = await User.findByPk(req.userId, { transaction: rollbackTx, lock: true });
+            await u.update({
+              balance:        parseFloat(u.balance) + amt,
+              totalWithdrawn: Math.max(0, parseFloat(u.totalWithdrawn) - amt),
+            }, { transaction: rollbackTx });
+            await tx.update({ status: 'failed', balanceAfter: prevBal }, { transaction: rollbackTx });
+            await rollbackTx.commit();
+          } catch (e2) { await rollbackTx.rollback(); }
+
+          const errCode = transfer.error?.code;
+          const errName = transfer.error?.name || '';
+          let msg = 'Не удалось выполнить перевод через CryptoBot';
+          if (errCode === 400 || errName.includes('USER_NOT_FOUND'))
+            msg = 'Пользователь не найден в CryptoBot. Откройте @CryptoBot и нажмите /start';
+          else if (errName.includes('NOT_ENOUGH_COINS'))
+            msg = 'Недостаточно средств на счёте CryptoBot';
+          else if (errName.includes('DUPLICATE_SPEND_ID'))
+            msg = 'Дублирующий запрос. Попробуйте позже';
+          return res.status(400).json({ error: msg });
+        }
+      } catch (transferErr) {
+        // Network error — rollback
+        const rollbackTx = await sequelize.transaction();
+        try {
+          const u = await User.findByPk(req.userId, { transaction: rollbackTx, lock: true });
+          await u.update({
+            balance:        parseFloat(u.balance) + amt,
+            totalWithdrawn: Math.max(0, parseFloat(u.totalWithdrawn) - amt),
+          }, { transaction: rollbackTx });
+          await tx.update({ status: 'failed', balanceAfter: prevBal }, { transaction: rollbackTx });
+          await rollbackTx.commit();
+        } catch { await rollbackTx.rollback(); }
+        return res.status(500).json({ error: 'Ошибка соединения с CryptoBot. Попробуйте позже.' });
+      }
+    } else {
+      await tx.update({ status: 'completed' });
+      notify.notifyWithdraw(req.user, amt, asset).catch(() => {});
+      return res.json({ success: true, balance: newBal, message: `[DEV] ${amt} ${asset} отправлено`, tx, devMode: true });
+    }
+  } catch (e) {
+    console.error('Withdraw error:', e.message);
+    res.status(500).json({ error: 'Ошибка вывода средств' });
+  }
+});
+
+// ─── GET /transactions ────────────────────────────────────────────────────────
+router.get('/transactions', auth, async (req, res) => {
+  try {
+    const { type, page = 1, limit = 30 } = req.query;
+    const where = { userId: req.userId };
+    if (type && type !== 'all') where.type = type;
+    const { rows: transactions, count: total } = await Transaction.findAndCountAll({
+      where, order: [['createdAt', 'DESC']],
+      limit: parseInt(limit), offset: (parseInt(page) - 1) * parseInt(limit),
+    });
+    res.json({ transactions, total });
+  } catch { res.status(500).json({ error: 'Не удалось загрузить транзакции' }); }
+});
+
+// ─── GET /balance ─────────────────────────────────────────────────────────────
+router.get('/balance', auth, async (req, res) => {
+  try {
+    const u = await User.findByPk(req.userId);
+    res.json({
+      balance:        parseFloat(u.balance)        || 0,
+      frozenBalance:  parseFloat(u.frozenBalance)  || 0,
+      totalDeposited: parseFloat(u.totalDeposited) || 0,
+      totalWithdrawn: parseFloat(u.totalWithdrawn) || 0,
+    });
+  } catch { res.status(500).json({ error: 'Не удалось загрузить баланс' }); }
+});
+
+module.exports = router;
