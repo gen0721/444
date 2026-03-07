@@ -91,9 +91,9 @@ export default function Layout() {
                   <Icon s={21}/>
                 </div>
                 <span style={{
-                  fontSize:'9px', fontWeight:700, letterSpacing:'0.04em',
+                  fontSize:'11px', fontWeight:700, letterSpacing:'0.04em',
                   fontFamily:'var(--font-display)',
-                  color: active ? '#a78bfa' : 'rgba(255,255,255,0.2)',
+                  color: active ? '#a78bfa' : 'rgba(255,255,255,0.65)',
                   textShadow: active ? '0 0 10px rgba(167,139,250,0.7)' : 'none',
                   transition:'all 0.2s',
                 }}>
