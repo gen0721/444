@@ -355,10 +355,12 @@ export default function DealPage() {
 
       {/* ── DELIVER MODAL ── */}
       {showDeliver && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.88)', backdropFilter: 'blur(16px)', zIndex: 300, display: 'flex', alignItems: 'flex-end' }}
-          onClick={e => { if (e.target === e.currentTarget) setShowDeliver(false) }}>
-          <div style={{ background: 'rgba(8,10,22,0.99)', borderRadius: '24px 24px 0 0', padding: '24px 20px', paddingBottom: 'calc(24px + env(safe-area-inset-bottom,16px))', width: '100%', border: '1px solid rgba(255,255,255,0.08)', borderBottom: 'none', boxShadow: '0 -8px 40px rgba(0,0,0,0.7)', animation: 'slideUp 0.35s cubic-bezier(0.34,1.56,0.64,1)' }}>
-            <div style={{ width: 36, height: 3, borderRadius: 2, background: 'rgba(255,255,255,0.1)', margin: '0 auto 20px' }}/>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(8,10,22,0.99)', backdropFilter: 'blur(16px)', zIndex: 300, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '0 20px', paddingBottom: 'calc(24px + env(safe-area-inset-bottom,16px))', width: '100%', overflowY: 'auto', animation: 'slideUp 0.3s cubic-bezier(0.34,1.56,0.64,1)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 0 20px' }}>
+              <div style={{ width: 36, height: 3, borderRadius: 2, background: 'rgba(255,255,255,0.1)' }}/>
+              <button onClick={() => setShowDeliver(false)} style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', width: '32px', height: '32px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,0.5)', fontSize: '16px' }}>✕</button>
+            </div>
             <div style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 700, color: '#22d3ee', marginBottom: 6 }}>
               📦 ПЕРЕДАТЬ ТОВАР
             </div>
