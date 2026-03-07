@@ -243,17 +243,18 @@ export default function WalletPage() {
 function BottomModal({ children, onClose }) {
   const overlayRef = useRef(null)
   return (
-    <div ref={overlayRef} onClick={e => { if (e.target === overlayRef.current) onClose() }}
-      style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.82)', backdropFilter:'blur(14px)', zIndex:200, display:'flex', alignItems:'flex-end' }}>
+    <div ref={overlayRef}
+      style={{ position:'fixed', inset:0, background:'rgba(8,10,22,0.99)', backdropFilter:'blur(14px)', zIndex:200, display:'flex', flexDirection:'column' }}>
       <div style={{
-        background:'rgba(8,10,22,0.99)', borderRadius:'24px 24px 0 0',
-        padding:'24px 20px', paddingBottom:'calc(24px + env(safe-area-inset-bottom, 16px))', width:'100%',
-        border:'1px solid rgba(255,255,255,0.08)', borderBottom:'none',
-        boxShadow:'0 -8px 40px rgba(0,0,0,0.7)',
-        animation:'slideUp 0.35s cubic-bezier(0.34,1.56,0.64,1)',
-        maxHeight:'88dvh', overflowY:'auto',
+        flex:1, display:'flex', flexDirection:'column',
+        padding:'0 20px', paddingBottom:'calc(24px + env(safe-area-inset-bottom, 16px))',
+        width:'100%', overflowY:'auto',
+        animation:'slideUp 0.3s cubic-bezier(0.34,1.56,0.64,1)',
       }}>
-        <div style={{ width:'36px', height:'3px', borderRadius:'2px', background:'rgba(255,255,255,0.1)', margin:'0 auto 20px' }}/>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'16px 0 20px' }}>
+          <div style={{ width:'36px', height:'3px', borderRadius:'2px', background:'rgba(255,255,255,0.1)' }}/>
+          <button onClick={onClose} style={{ background:'rgba(255,255,255,0.07)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:'10px', width:'32px', height:'32px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:'rgba(255,255,255,0.5)', fontSize:'16px' }}>✕</button>
+        </div>
         {children}
       </div>
     </div>
