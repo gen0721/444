@@ -314,7 +314,7 @@ function ChatView({ chat, messages, user, typing, memberCount, connected, text, 
   const letter = chat.name.charAt(0).toUpperCase()
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', position: 'fixed', inset: 0, top: 0, left: 0, right: 0, bottom: 0, zIndex: 50, background: 'var(--bg)' }}>
       {/* Header */}
       <div style={{ padding: '12px 14px', background: 'rgba(6,8,17,0.98)', backdropFilter: 'blur(32px)', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, zIndex: 10 }}>
         <button onClick={onBack} className="btn-icon"><IC.Back s={18}/></button>
