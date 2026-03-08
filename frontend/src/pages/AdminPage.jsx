@@ -72,10 +72,24 @@ export default function AdminPage() {
       if (t === 'users')     { const { data } = await api.get('/admin/users', { params:{ search: search || undefined, limit:50 } }); setUsers(data.users || data || []) }
       if (t === 'deals')     { const { data } = await api.get('/admin/deals', { params:{ limit:50 } });  setDeals(data.deals || data || []) }
       if (t === 'prods')     { const { data } = await api.get('/admin/products', { params:{ limit:50 } }); setProds(data.products || data || []) }
-      if (t === 'broadcast') { const { data } = await api.get('/admin/broadcasts');                      setBroadcasts(data || []) }
-      if (t === 'subadmins') { const { data } = await api.get('/admin/subadmins');                        setSubadmins(data || []) }
+      if (t === 'broadcast') {
+        const [bcRes, usersRes] = await Promise.all([
+          api.get('/admin/broadcasts'),
+          api.get('/admin/users', { params:{ limit: 200 } }),
+        ])
+        setBroadcasts(bcRes.data || [])
+        setUsers(usersRes.data?.users || usersRes.data || [])
+      }
+      if (t === 'subadmins') {
+        const [saRes, usersRes] = await Promise.all([
+          api.get('/admin/subadmins'),
+          api.get('/admin/users', { params:{ limit: 200 } }),
+        ])
+        setSubadmins(saRes.data || [])
+        setUsers(usersRes.data?.users || usersRes.data || [])
+      }
       if (t === 'chats')     { const { data } = await api.get('/admin/chats');                            setChats(data || []) }
-    } catch (e) { console.error(e) }
+    } catch (e) { console.error('loadTab error:', e.message) }
     setLoading(false)
   }
 
