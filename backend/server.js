@@ -9,15 +9,24 @@ const jwt        = require('jsonwebtoken');
 const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server, {
-  cors: { origin: '*', methods: ['GET','POST'] },
+  cors: { origin: '*', methods: ['GET','POST'], credentials: true },
   transports: ['websocket','polling'],
-  pingTimeout:  60000,
-  pingInterval: 25000,
+  pingTimeout:  30000,
+  pingInterval: 10000,
+  upgradeTimeout: 10000,
+  maxHttpBufferSize: 1e6,
+  allowEIO3: true,
 });
 
 const sequelize = require('./db');
-const { User }  = require('./models/index');
+const { User, Chat, ChatMessage, ChatMember } = require('./models/index');
 const { rooms, sanitizeRoom } = require('./routes/rooms');
+const { startCron } = require('./cron');
+
+global.io = io; // available to routes
+// Expose io + active-socket tracker to cron
+global.chatIo            = io;
+global.chatActiveSockets = new Map(); // chatId → online count (integer)
 
 app.use(cors({ origin: '*', credentials: true }));
 app.use(express.json({ limit: '10mb' }));
@@ -31,7 +40,9 @@ app.use('/api/deals',      require('./routes/deals'));
 app.use('/api/wallet',     require('./routes/wallet'));
 app.use('/api/admin',      require('./routes/admin'));
 app.use('/api/categories', require('./routes/categories'));
-app.use('/api/rooms',      require('./routes/rooms'));
+app.use('/api/rooms',      require('./routes/rooms').router || require('./routes/rooms'));
+app.use('/api/telegram',   require('./routes/telegram'));
+app.use('/api/chats',      require('./routes/chats'));
 
 app.get('/health', (req, res) => res.json({ status: 'ok', ts: new Date() }));
 
@@ -40,160 +51,227 @@ app.use(express.static(frontendDist));
 app.get('*', (req, res) => res.sendFile(path.join(frontendDist, 'index.html')));
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Socket.io — WebRTC signaling for voice rooms
+// Socket.io
 // ─────────────────────────────────────────────────────────────────────────────
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_change_me';
 const socketMeta = new Map(); // socketId → { userId, roomId, userName }
+const chatUsers  = new Map(); // socketId → { userId, userName, chatId }
 
-// Auth middleware
 io.use(async (socket, next) => {
   try {
-    const token = socket.handshake.auth?.token
-      || socket.handshake.query?.token;
+    const token = socket.handshake.auth?.token || socket.handshake.query?.token;
     if (!token) return next(new Error('No auth token'));
     const { userId } = jwt.verify(token, JWT_SECRET);
     const user = await User.findByPk(userId);
     if (!user) return next(new Error('User not found'));
+    if (user.isBanned) return next(new Error('Account banned'));
     socket.userId   = String(userId);
     socket.userName = user.firstName || user.username || 'User';
+    await user.update({ isOnline: true, lastActive: new Date() });
     next();
   } catch (e) {
     next(new Error('Invalid token: ' + e.message));
   }
 });
 
+// ── Active socket counter helpers ─────────────────────────────────────────────
+function chatIncrement(chatId) {
+  global.chatActiveSockets.set(chatId, (global.chatActiveSockets.get(chatId) || 0) + 1);
+}
+function chatDecrement(chatId) {
+  const n = Math.max(0, (global.chatActiveSockets.get(chatId) || 1) - 1);
+  if (n === 0) global.chatActiveSockets.delete(chatId);
+  else global.chatActiveSockets.set(chatId, n);
+}
+
 io.on('connection', (socket) => {
   console.log(`🔌 ${socket.userName} connected [${socket.id}]`);
 
-  // ── join-room ─────────────────────────────────────────────────────────
+  // ── Voice: join-room ────────────────────────────────────────────────────
   socket.on('join-room', ({ roomId, pin }) => {
     const room = rooms.get(roomId);
-    if (!room) {
-      socket.emit('room-error', { message: 'Комната не найдена' });
-      return;
-    }
-
-    // PIN check for private rooms
+    if (!room) { socket.emit('room-error', { message: 'Комната не найдена' }); return; }
     if (room.type === 'private' && String(pin || '') !== String(room.pin || '')) {
-      socket.emit('room-error', { message: 'Неверный PIN' });
-      return;
+      socket.emit('room-error', { message: 'Неверный PIN' }); return;
     }
-
-    // Leave any previous room first
     const prev = socketMeta.get(socket.id);
-    if (prev?.roomId && prev.roomId !== roomId) {
-      _leaveRoom(socket, prev.roomId);
-    }
-
+    if (prev?.roomId && prev.roomId !== roomId) _leaveRoom(socket, prev.roomId);
     socket.join(roomId);
     socketMeta.set(socket.id, { userId: socket.userId, roomId, userName: socket.userName });
-
-    // Upsert into participants list
     const existing = room.participants.find(p => p.id === socket.userId);
-    if (existing) {
-      existing.socketId = socket.id; // reconnect: update socketId
-    } else {
-      room.participants.push({
-        id: socket.userId, name: socket.userName,
-        muted: false, socketId: socket.id,
-      });
-    }
-
-    // 1. Send existing participants to the joiner so they can initiate offers
+    if (existing) existing.socketId = socket.id;
+    else room.participants.push({ id: socket.userId, name: socket.userName, muted: false, socketId: socket.id });
     const others = room.participants
       .filter(p => p.socketId !== socket.id)
       .map(p => ({ socketId: p.socketId, userId: p.id, userName: p.name, muted: p.muted }));
-
     socket.emit('room-joined', { roomId, participants: others });
-
-    // 2. Notify everyone else that a new peer arrived (they do NOT initiate — joiner does)
-    socket.to(roomId).emit('peer-joined', {
-      peerId:   socket.id,
-      userId:   socket.userId,
-      userName: socket.userName,
-    });
-
+    socket.to(roomId).emit('peer-joined', { peerId: socket.id, userId: socket.userId, userName: socket.userName });
     _broadcastUpdate(roomId);
-    console.log(`  → ${socket.userName} joined room "${room.name}" (${room.participants.length} total)`);
   });
 
-  // ── WebRTC signaling ──────────────────────────────────────────────────
-  // ONLY joiner sends offers TO existing peers
-  socket.on('offer', ({ targetSocketId, sdp }) => {
-    if (!sdp) return;
-    io.to(targetSocketId).emit('offer', {
-      fromSocketId: socket.id,
-      userName:     socket.userName,
-      sdp,
-    });
-  });
-
-  socket.on('answer', ({ targetSocketId, sdp }) => {
-    if (!sdp) return;
-    io.to(targetSocketId).emit('answer', {
-      fromSocketId: socket.id,
-      sdp,
-    });
-  });
-
-  socket.on('ice-candidate', ({ targetSocketId, candidate }) => {
-    if (!candidate || !targetSocketId) return;
-    io.to(targetSocketId).emit('ice-candidate', {
-      fromSocketId: socket.id,
-      candidate,
-    });
-  });
-
-  // ── Mute toggle ───────────────────────────────────────────────────────
-  socket.on('toggle-mute', ({ muted }) => {
+  // ── Voice: WebRTC signaling ─────────────────────────────────────────────
+  socket.on('offer',         ({ targetSocketId, sdp }) => { if (sdp && targetSocketId) io.to(targetSocketId).emit('offer',         { fromSocketId: socket.id, userName: socket.userName, sdp }); });
+  socket.on('answer',        ({ targetSocketId, sdp }) => { if (sdp && targetSocketId) io.to(targetSocketId).emit('answer',        { fromSocketId: socket.id, sdp }); });
+  socket.on('ice-candidate', ({ targetSocketId, candidate }) => { if (candidate && targetSocketId) io.to(targetSocketId).emit('ice-candidate', { fromSocketId: socket.id, candidate }); });
+  socket.on('toggle-mute',   ({ muted }) => {
     const meta = socketMeta.get(socket.id);
     if (!meta?.roomId) return;
     const room = rooms.get(meta.roomId);
     if (!room) return;
     const p = room.participants.find(p => p.socketId === socket.id);
     if (p) p.muted = Boolean(muted);
-    socket.to(meta.roomId).emit('peer-muted', {
-      socketId: socket.id,
-      userId:   socket.userId,
-      muted:    Boolean(muted),
-    });
+    socket.to(meta.roomId).emit('peer-muted', { socketId: socket.id, userId: socket.userId, muted: Boolean(muted) });
     _broadcastUpdate(meta.roomId);
   });
-
-  // ── Leave room ────────────────────────────────────────────────────────
   socket.on('leave-room', () => {
     const meta = socketMeta.get(socket.id);
     if (meta?.roomId) _leaveRoom(socket, meta.roomId);
   });
 
-  // ── Disconnect ────────────────────────────────────────────────────────
+  // ── Chat: join ──────────────────────────────────────────────────────────
+  socket.on('chat:join', async ({ chatId, password }) => {
+    try {
+      const chat = await Chat.findOne({ where: { id: chatId, deletedAt: null } });
+      if (!chat) { socket.emit('chat:error', { message: 'Чат не найден' }); return; }
+
+      // Check if user is admin (bypass password)
+      const socketUser = await User.findByPk(socket.userId);
+      const isAdmin = socketUser?.isAdmin || false;
+
+      if (chat.type === 'private' && !isAdmin) {
+        const isAlreadyMember = await ChatMember.findOne({ where: { chatId, userId: socket.userId } });
+        if (!isAlreadyMember && password !== chat.password) {
+          socket.emit('chat:error', { message: 'Неверный пароль' }); return;
+        }
+      }
+
+      // Leave previous chat
+      const prev = chatUsers.get(socket.id);
+      if (prev?.chatId && prev.chatId !== chatId) {
+        socket.leave(`chat:${prev.chatId}`);
+        chatDecrement(prev.chatId);
+        socket.to(`chat:${prev.chatId}`).emit('chat:user-left', {
+          userId: socket.userId, userName: socket.userName,
+        });
+      }
+
+      socket.join(`chat:${chatId}`);
+      chatUsers.set(socket.id, { userId: socket.userId, userName: socket.userName, chatId, isAdmin });
+      chatIncrement(chatId);
+
+      // Upsert member in DB (admins don't count as members)
+      if (!isAdmin) {
+        await ChatMember.findOrCreate({ where: { chatId, userId: socket.userId } });
+      }
+      const memberCount = await ChatMember.count({ where: { chatId } });
+      await chat.update({ memberCount });
+
+      // Send last 100 messages from DB
+      const msgs = await ChatMessage.findAll({
+        where: { chatId }, order: [['createdAt', 'ASC']], limit: 100,
+      });
+
+      socket.emit('chat:joined', {
+        chatId,
+        isClosed: chat.isClosed || false,
+        closedReason: chat.closedReason || null,
+        messages: msgs.map(m => ({
+          id: m.id, chatId: m.chatId, userId: m.userId, userName: m.userName,
+          text: m.text, ts: m.createdAt, isAdmin: m.isAdmin || false, isSystem: m.isSystem || false,
+        })),
+        memberCount,
+      });
+
+      socket.to(`chat:${chatId}`).emit('chat:user-joined', {
+        userId: socket.userId, userName: socket.userName, memberCount,
+      });
+    } catch (e) {
+      console.error('chat:join error:', e.message);
+      socket.emit('chat:error', { message: 'Ошибка подключения к чату' });
+    }
+  });
+
+  // ── Chat: leave ─────────────────────────────────────────────────────────
+  socket.on('chat:leave', () => _leaveChat(socket));
+
+  // ── Chat: message ───────────────────────────────────────────────────────
+  socket.on('chat:message', async ({ chatId, text }) => {
+    if (!text?.trim() || text.trim().length > 2000) return;
+    const meta = chatUsers.get(socket.id);
+    if (!meta || meta.chatId !== chatId) return;
+
+    try {
+      const chat = await Chat.findOne({ where: { id: chatId, deletedAt: null } });
+      if (!chat) return;
+
+      // Block messages in closed chats (unless admin)
+      if (chat.isClosed && !meta.isAdmin) {
+        socket.emit('chat:error', { message: 'Чат закрыт администратором' }); return;
+      }
+
+      // Persist to DB
+      const msg = await ChatMessage.create({
+        chatId, userId: socket.userId, userName: socket.userName,
+        text: text.trim(), isAdmin: meta.isAdmin || false,
+      });
+
+      // Update chat last message
+      await chat.update({
+        lastMessageAt:   msg.createdAt,
+        lastMessageText: text.trim().slice(0, 100),
+        lastMessageUser: socket.userName,
+      });
+
+      const out = {
+        id: msg.id, chatId, userId: msg.userId, userName: msg.userName,
+        text: msg.text, ts: msg.createdAt, isAdmin: msg.isAdmin || false, isSystem: false,
+      };
+      io.to(`chat:${chatId}`).emit('chat:message', out);
+    } catch (e) {
+      console.error('chat:message error:', e.message);
+    }
+  });
+
+  // ── Chat: typing ────────────────────────────────────────────────────────
+  socket.on('chat:typing', ({ chatId, typing }) => {
+    const meta = chatUsers.get(socket.id);
+    if (!meta || meta.chatId !== chatId) return;
+    socket.to(`chat:${chatId}`).emit('chat:typing', {
+      userId: socket.userId, userName: socket.userName, typing,
+    });
+  });
+
+  // ── Disconnect ──────────────────────────────────────────────────────────
   socket.on('disconnect', (reason) => {
-    const meta = socketMeta.get(socket.id);
-    if (meta?.roomId) _leaveRoom(socket, meta.roomId);
+    const voiceMeta = socketMeta.get(socket.id);
+    if (voiceMeta?.roomId) _leaveRoom(socket, voiceMeta.roomId);
     socketMeta.delete(socket.id);
-    console.log(`🔌 ${socket.userName} disconnected [${socket.id}] reason: ${reason}`);
+    _leaveChat(socket);
+    console.log(`🔌 ${socket.userName} disconnected [${reason}]`);
   });
 });
 
+// ── Helper: leave chat ────────────────────────────────────────────────────────
+function _leaveChat(socket) {
+  const meta = chatUsers.get(socket.id);
+  if (!meta?.chatId) return;
+  socket.leave(`chat:${meta.chatId}`);
+  chatDecrement(meta.chatId);
+  socket.to(`chat:${meta.chatId}`).emit('chat:user-left', {
+    userId: socket.userId, userName: socket.userName,
+  });
+  chatUsers.delete(socket.id);
+}
+
+// ── Voice helpers ─────────────────────────────────────────────────────────────
 function _leaveRoom(socket, roomId) {
   socket.leave(roomId);
   const room = rooms.get(roomId);
   if (!room) return;
-
   room.participants = room.participants.filter(p => p.socketId !== socket.id);
-
-  // Tell remaining peers this socket left
-  socket.to(roomId).emit('peer-left', {
-    socketId: socket.id,
-    userId:   socket.userId,
-  });
-
-  if (room.participants.length === 0) {
-    rooms.delete(roomId);
-    console.log(`🗑  Room deleted (empty): ${roomId}`);
-  } else {
-    _broadcastUpdate(roomId);
-  }
+  socket.to(roomId).emit('peer-left', { socketId: socket.id, userId: socket.userId });
+  if (room.participants.length === 0) { rooms.delete(roomId); console.log(`🗑  Room deleted: ${roomId}`); }
+  else _broadcastUpdate(roomId);
 }
 
 function _broadcastUpdate(roomId) {
@@ -201,12 +279,7 @@ function _broadcastUpdate(roomId) {
   if (!room) return;
   io.to(roomId).emit('room-updated', {
     count: room.participants.length,
-    participants: room.participants.map(p => ({
-      socketId: p.socketId,
-      userId:   p.id,
-      userName: p.name,
-      muted:    p.muted,
-    })),
+    participants: room.participants.map(p => ({ socketId: p.socketId, userId: p.id, userName: p.name, muted: p.muted })),
   });
 }
 
@@ -215,49 +288,76 @@ async function init() {
   try {
     await sequelize.authenticate();
     console.log('✅ PostgreSQL connected');
-    await sequelize.sync({ force: false });
+    await sequelize.sync({ force: false, alter: false });
     console.log('✅ Tables synced');
 
-    // Auto-migrate: add any missing columns (safe - IF NOT EXISTS)
-    try {
-      const q = sequelize.getQueryInterface();
-      const cols = [
-        // Products
-        [`ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "platform" VARCHAR(100)`, []],
-        [`ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "region" VARCHAR(100)`, []],
-        [`ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "deliveryType" VARCHAR(50) DEFAULT 'digital'`, []],
-        [`ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "stock" INTEGER DEFAULT 1`, []],
-        [`ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "sold" INTEGER DEFAULT 0`, []],
-        // Users
-        [`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isMainAdmin" BOOLEAN DEFAULT false`, []],
-        [`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isSubAdmin" BOOLEAN DEFAULT false`, []],
-        [`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isVerified" BOOLEAN DEFAULT false`, []],
-        [`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isBanned" BOOLEAN DEFAULT false`, []],
-        [`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "photoUrl" TEXT`, []],
-        [`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalSales" INTEGER DEFAULT 0`, []],
-        [`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalPurchases" INTEGER DEFAULT 0`, []],
-        [`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalDeposited" FLOAT DEFAULT 0`, []],
-        [`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalWithdrawn" FLOAT DEFAULT 0`, []],
-        [`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "rating" FLOAT DEFAULT 5`, []],
-        [`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "reviewCount" INTEGER DEFAULT 0`, []],
-        [`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "frozenBalance" FLOAT DEFAULT 0`, []],
-        // Transactions
-        [`ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "cryptoBotTransferId" VARCHAR(100)`, []],
-        [`ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "balanceBefore" FLOAT`, []],
-        [`ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "balanceAfter" FLOAT`, []],
-      ];
-      for (const [sql] of cols) {
-        try { await sequelize.query(sql); } catch {}
-      }
-      console.log('✅ Auto-migration done');
-    } catch (e) { console.log('⚠ Migration warning:', e.message); }
+    const migrations = [
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isMainAdmin"     BOOLEAN DEFAULT false`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isSubAdmin"      BOOLEAN DEFAULT false`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isVerified"      BOOLEAN DEFAULT false`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isBanned"        BOOLEAN DEFAULT false`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "photoUrl"        TEXT`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalSales"      INTEGER DEFAULT 0`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalPurchases"  INTEGER DEFAULT 0`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalDeposited"  FLOAT DEFAULT 0`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalWithdrawn"  FLOAT DEFAULT 0`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "rating"          FLOAT DEFAULT 5`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "reviewCount"     INTEGER DEFAULT 0`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "frozenBalance"   FLOAT DEFAULT 0`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isOnline"        BOOLEAN DEFAULT false`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "lastActive"      TIMESTAMPTZ`,
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "platform"     VARCHAR(100)`,
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "region"       VARCHAR(100)`,
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "deliveryType" VARCHAR(50) DEFAULT 'digital'`,
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "stock"        INTEGER DEFAULT 1`,
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "sold"         INTEGER DEFAULT 0`,
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "description"  TEXT DEFAULT ''`,
+      `ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "cryptoBotTransferId" VARCHAR(100)`,
+      `ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "balanceBefore" FLOAT`,
+      `ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "balanceAfter"  FLOAT`,
+      `CREATE TABLE IF NOT EXISTS "Broadcasts" (
+        "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "senderId" UUID NOT NULL, "title" VARCHAR(200) NOT NULL, "text" TEXT NOT NULL,
+        "targetType" VARCHAR(20) DEFAULT 'all', "targetUserId" UUID,
+        "sentCount" INTEGER DEFAULT 0, "status" VARCHAR(20) DEFAULT 'pending',
+        "createdAt" TIMESTAMPTZ DEFAULT NOW(), "updatedAt" TIMESTAMPTZ DEFAULT NOW()
+      )`,
+      `CREATE TABLE IF NOT EXISTS "Chats" (
+        "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "name" VARCHAR(100) NOT NULL, "type" VARCHAR(20) DEFAULT 'public',
+        "ownerId" UUID NOT NULL, "ownerName" VARCHAR(100) NOT NULL,
+        "password" VARCHAR(200), "memberCount" INTEGER DEFAULT 0,
+        "lastMessageAt" TIMESTAMPTZ, "lastMessageText" VARCHAR(500),
+        "lastMessageUser" VARCHAR(100), "deletedAt" TIMESTAMPTZ,
+        "createdAt" TIMESTAMPTZ DEFAULT NOW(), "updatedAt" TIMESTAMPTZ DEFAULT NOW()
+      )`,
+      `CREATE TABLE IF NOT EXISTS "ChatMessages" (
+        "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "chatId" UUID NOT NULL, "userId" UUID NOT NULL, "userName" VARCHAR(100) NOT NULL,
+        "text" TEXT NOT NULL, "createdAt" TIMESTAMPTZ DEFAULT NOW()
+      )`,
+      `CREATE TABLE IF NOT EXISTS "ChatMembers" (
+        "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "chatId" UUID NOT NULL, "userId" UUID NOT NULL,
+        "joinedAt" TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE("chatId","userId")
+      )`,
+      `CREATE INDEX IF NOT EXISTS "idx_chatmsg_chatid" ON "ChatMessages"("chatId","createdAt" DESC)`,
+      `CREATE INDEX IF NOT EXISTS "idx_chatmember_chatid" ON "ChatMembers"("chatId")`,
+    ];
 
+    for (const sql of migrations) {
+      try { await sequelize.query(sql); } catch (_) {}
+    }
+    console.log('✅ Migrations done');
+
+    // Ensure admin
     const adminTgId = process.env.ADMIN_TELEGRAM_ID;
     if (adminTgId) {
       try {
         const [admin, created] = await User.findOrCreate({
           where:    { telegramId: String(adminTgId) },
-          defaults: { telegramId: String(adminTgId), username:'admin', firstName:'Admin', isAdmin:true, isMainAdmin:true, isVerified:true },
+          defaults: { telegramId: String(adminTgId), username: 'admin', firstName: 'Admin', isAdmin: true, isMainAdmin: true, isVerified: true },
         });
         if (!created) {
           const u = {};
@@ -270,6 +370,7 @@ async function init() {
       } catch (e) { console.log('⚠ Admin setup:', e.message); }
     }
 
+    startCron();
     const PORT = process.env.PORT || 5000;
     server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server on port ${PORT}`));
   } catch (err) {
