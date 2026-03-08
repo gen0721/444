@@ -5,24 +5,53 @@ import GameBackground from './GameBackground'
 import { IC } from './Icons'
 
 export default function Layout() {
-  const { user, theme, toggleTheme } = useStore()
+  const { user, theme, toggleTheme, banned, banUntil, banReason, permanent } = useStore()
   const navigate = useNavigate()
   const { pathname } = useLocation()
 
   const tabs = [
     { to:'/',        label:'Главная',  Icon: IC.Home   },
     { to:'/wallet',  label:'Баланс',   Icon: IC.Wallet },
-    { to:'/rooms',   label:'Голос',    Icon: IC.Chat   },
+    { to:'/chats',   label:'Чаты',     Icon: IC.Chat   },
     { to:'/create',  special: true                     },
-    { to:'/profile', label:'Профиль',  Icon: IC.User   },
-    ...(user?.isAdmin ? [{ to:'/admin', label:'Панель', Icon: IC.Crown }] : []),
+    ...(user?.isAdmin
+      ? [{ to:'/admin', label:'Панель', Icon: IC.Crown }]
+      : [{ to:'/profile', label:'Профиль', Icon: IC.User }]),
   ]
+
+  // Banned screen
+  if (banned) {
+    const expiry = banUntil ? new Date(banUntil).toLocaleString('ru', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }) : null
+    return (
+      <div style={{ height:'100dvh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', background:'#060811', padding:'32px 24px', textAlign:'center' }}>
+        <div style={{ fontSize:'72px', marginBottom:'20px' }}>🚫</div>
+        <div style={{ fontFamily:'var(--font-display)', fontSize:'24px', fontWeight:800, color:'#f87171', letterSpacing:'0.05em', marginBottom:'12px' }}>
+          АККАУНТ ЗАБЛОКИРОВАН
+        </div>
+        {permanent
+          ? <div style={{ fontSize:'15px', color:'#f87171', fontFamily:'var(--font-display)', fontWeight:700, marginBottom:'10px' }}>НАВСЕГДА</div>
+          : expiry && <div style={{ fontSize:'13px', color:'rgba(248,113,113,0.7)', marginBottom:'10px' }}>до {expiry}</div>
+        }
+        {banReason && (
+          <div style={{ fontSize:'12px', color:'var(--t3)', background:'rgba(248,113,113,0.06)', border:'1px solid rgba(248,113,113,0.15)', borderRadius:'12px', padding:'10px 16px', marginBottom:'20px', maxWidth:'300px' }}>
+            Причина: {banReason}
+          </div>
+        )}
+        <div style={{ fontSize:'12px', color:'var(--t3)', lineHeight:'1.6', maxWidth:'280px' }}>
+          {permanent
+            ? 'Ваш аккаунт заблокирован без возможности восстановления. Обратитесь в поддержку.'
+            : 'После окончания срока бана доступ будет восстановлен автоматически.'
+          }
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div style={{ height:'100vh', height:'100dvh', display:'flex', flexDirection:'column', background:'var(--bg)', position:'relative', overflow:'hidden' }}>
       <GameBackground />
 
-      <div className="scroll" style={{ flex:1, position:'relative', zIndex:2, paddingBottom:'68px' }}>
+      <div className="scroll" style={{ flex:1, position:'relative', zIndex:2, paddingBottom:'calc(68px + env(safe-area-inset-bottom, 0px))' }}>
         <Outlet/>
       </div>
 
@@ -38,27 +67,27 @@ export default function Layout() {
         {/* top accent line */}
         <div style={{ height:'1px', background:'linear-gradient(90deg,transparent 0%,rgba(124,106,255,0.5) 30%,rgba(167,139,250,0.4) 50%,rgba(124,106,255,0.5) 70%,transparent 100%)' }}/>
 
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-around', height:'58px', maxWidth:'520px', margin:'0 auto', padding:'0 6px' }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-around', height:'52px', maxWidth:'520px', margin:'0 auto', padding:'0 6px' }}>
           {tabs.map((tab) => {
             if (tab.special) return (
               <button key="plus" onClick={() => navigate('/create')} style={{
-                width:'52px', height:'52px', borderRadius:'16px',
+                width:'44px', height:'44px', borderRadius:'13px',
                 background:'linear-gradient(160deg,#9d8fff 0%,#7c6aff 40%,#4035b5 100%)',
                 border:'1px solid rgba(124,106,255,0.5)',
                 cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center',
-                color:'white', transform:'translateY(-14px)',
+                color:'white', transform:'translateY(-11px)',
                 boxShadow:'0 0 0 1px rgba(124,106,255,0.2), 0 4px 16px rgba(124,106,255,0.65), 0 10px 35px rgba(124,106,255,0.3)',
                 position:'relative', overflow:'hidden',
                 transition:'transform 0.2s ease, box-shadow 0.2s ease',
                 animation:'glowPulse 3s ease-in-out infinite',
               }}
-              onTouchStart={e => { e.currentTarget.style.transform='translateY(-11px) scale(0.93)' }}
-              onTouchEnd={e   => { e.currentTarget.style.transform='translateY(-14px) scale(1)' }}
-              onMouseDown={e  => { e.currentTarget.style.transform='translateY(-11px) scale(0.93)' }}
-              onMouseUp={e    => { e.currentTarget.style.transform='translateY(-14px) scale(1)' }}
+              onTouchStart={e => { e.currentTarget.style.transform='translateY(-9px) scale(0.93)' }}
+              onTouchEnd={e   => { e.currentTarget.style.transform='translateY(-11px) scale(1)' }}
+              onMouseDown={e  => { e.currentTarget.style.transform='translateY(-9px) scale(0.93)' }}
+              onMouseUp={e    => { e.currentTarget.style.transform='translateY(-11px) scale(1)' }}
               >
                 <div style={{ position:'absolute', top:0, left:0, right:0, height:'48%', background:'linear-gradient(180deg,rgba(255,255,255,0.28),transparent)', borderRadius:'16px 16px 0 0', pointerEvents:'none' }}/>
-                <IC.Plus s={24} c="white"/>
+                <IC.Plus s={20} c="white"/>
               </button>
             )
 
@@ -89,9 +118,9 @@ export default function Layout() {
                   <Icon s={21}/>
                 </div>
                 <span style={{
-                  fontSize:'9px', fontWeight:700, letterSpacing:'0.04em',
+                  fontSize:'11px', fontWeight:700, letterSpacing:'0.04em',
                   fontFamily:'var(--font-display)',
-                  color: active ? '#a78bfa' : 'rgba(255,255,255,0.2)',
+                  color: active ? '#a78bfa' : 'rgba(255,255,255,0.65)',
                   textShadow: active ? '0 0 10px rgba(167,139,250,0.7)' : 'none',
                   transition:'all 0.2s',
                 }}>
