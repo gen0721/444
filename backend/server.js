@@ -288,80 +288,199 @@ async function init() {
   try {
     await sequelize.authenticate();
     console.log('✅ PostgreSQL connected');
-    await sequelize.sync({ force: false, alter: false });
-    console.log('✅ Tables synced');
 
+    // Run all migrations via raw SQL — no Sequelize sync to avoid ENUM conflicts
     const migrations = [
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isMainAdmin"     BOOLEAN DEFAULT false`,
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isSubAdmin"      BOOLEAN DEFAULT false`,
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isVerified"      BOOLEAN DEFAULT false`,
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isBanned"        BOOLEAN DEFAULT false`,
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "photoUrl"        TEXT`,
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalSales"      INTEGER DEFAULT 0`,
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalPurchases"  INTEGER DEFAULT 0`,
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalDeposited"  FLOAT DEFAULT 0`,
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalWithdrawn"  FLOAT DEFAULT 0`,
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "rating"          FLOAT DEFAULT 5`,
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "reviewCount"     INTEGER DEFAULT 0`,
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "frozenBalance"   FLOAT DEFAULT 0`,
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isOnline"        BOOLEAN DEFAULT false`,
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "lastActive"      TIMESTAMPTZ`,
-      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "platform"     VARCHAR(100)`,
-      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "region"       VARCHAR(100)`,
-      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "deliveryType" VARCHAR(50) DEFAULT 'digital'`,
-      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "stock"        INTEGER DEFAULT 1`,
-      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "sold"         INTEGER DEFAULT 0`,
-      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "description"  TEXT DEFAULT ''`,
-      `ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "cryptoBotTransferId" VARCHAR(100)`,
-      `ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "balanceBefore" FLOAT`,
-      `ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "balanceAfter"  FLOAT`,
+      // Core tables
+      `CREATE TABLE IF NOT EXISTS "Users" (
+        "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "telegramId" VARCHAR(100) UNIQUE,
+        "username" VARCHAR(100),
+        "firstName" VARCHAR(100),
+        "lastName" VARCHAR(100),
+        "email" VARCHAR(200) UNIQUE,
+        "password" TEXT,
+        "balance" DECIMAL(12,2) DEFAULT 0,
+        "isAdmin" BOOLEAN DEFAULT false,
+        "createdAt" TIMESTAMPTZ DEFAULT NOW(),
+        "updatedAt" TIMESTAMPTZ DEFAULT NOW()
+      )`,
+      `CREATE TABLE IF NOT EXISTS "Products" (
+        "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "sellerId" UUID NOT NULL,
+        "title" VARCHAR(200) NOT NULL,
+        "description" TEXT DEFAULT '',
+        "price" DECIMAL(12,2) NOT NULL,
+        "category" VARCHAR(50) NOT NULL,
+        "subcategory" VARCHAR(50),
+        "images" JSONB DEFAULT '[]',
+        "tags" JSONB DEFAULT '[]',
+        "status" VARCHAR(30) DEFAULT 'active',
+        "views" INTEGER DEFAULT 0,
+        "createdAt" TIMESTAMPTZ DEFAULT NOW(),
+        "updatedAt" TIMESTAMPTZ DEFAULT NOW()
+      )`,
+      `CREATE TABLE IF NOT EXISTS "Deals" (
+        "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "buyerId" UUID NOT NULL,
+        "sellerId" UUID NOT NULL,
+        "productId" UUID NOT NULL,
+        "amount" DECIMAL(12,2) NOT NULL,
+        "sellerAmount" DECIMAL(12,2) NOT NULL,
+        "commission" DECIMAL(12,2) NOT NULL,
+        "status" VARCHAR(30) DEFAULT 'frozen',
+        "messages" JSONB DEFAULT '[]',
+        "createdAt" TIMESTAMPTZ DEFAULT NOW(),
+        "updatedAt" TIMESTAMPTZ DEFAULT NOW()
+      )`,
+      `CREATE TABLE IF NOT EXISTS "Transactions" (
+        "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "userId" UUID NOT NULL,
+        "type" VARCHAR(30) NOT NULL,
+        "amount" DECIMAL(12,2) NOT NULL,
+        "currency" VARCHAR(10) DEFAULT 'USDT',
+        "status" VARCHAR(20) DEFAULT 'pending',
+        "description" TEXT,
+        "dealId" UUID,
+        "createdAt" TIMESTAMPTZ DEFAULT NOW(),
+        "updatedAt" TIMESTAMPTZ DEFAULT NOW()
+      )`,
+      `CREATE TABLE IF NOT EXISTS "Favorites" (
+        "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "userId" UUID NOT NULL,
+        "productId" UUID NOT NULL,
+        UNIQUE("userId","productId")
+      )`,
       `CREATE TABLE IF NOT EXISTS "Broadcasts" (
         "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        "senderId" UUID NOT NULL, "title" VARCHAR(200) NOT NULL, "text" TEXT NOT NULL,
-        "targetType" VARCHAR(20) DEFAULT 'all', "targetUserId" UUID,
-        "sentCount" INTEGER DEFAULT 0, "status" VARCHAR(20) DEFAULT 'pending',
-        "createdAt" TIMESTAMPTZ DEFAULT NOW(), "updatedAt" TIMESTAMPTZ DEFAULT NOW()
+        "senderId" UUID NOT NULL,
+        "title" VARCHAR(200) NOT NULL,
+        "text" TEXT NOT NULL,
+        "targetType" VARCHAR(20) DEFAULT 'all',
+        "targetUserId" UUID,
+        "sentCount" INTEGER DEFAULT 0,
+        "status" VARCHAR(20) DEFAULT 'pending',
+        "createdAt" TIMESTAMPTZ DEFAULT NOW(),
+        "updatedAt" TIMESTAMPTZ DEFAULT NOW()
       )`,
       `CREATE TABLE IF NOT EXISTS "Chats" (
         "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        "name" VARCHAR(100) NOT NULL, "type" VARCHAR(20) DEFAULT 'public',
-        "ownerId" UUID NOT NULL, "ownerName" VARCHAR(100) NOT NULL,
-        "password" VARCHAR(200), "memberCount" INTEGER DEFAULT 0,
-        "lastMessageAt" TIMESTAMPTZ, "lastMessageText" VARCHAR(500),
-        "lastMessageUser" VARCHAR(100), "deletedAt" TIMESTAMPTZ,
-        "createdAt" TIMESTAMPTZ DEFAULT NOW(), "updatedAt" TIMESTAMPTZ DEFAULT NOW()
+        "name" VARCHAR(100) NOT NULL,
+        "type" VARCHAR(20) DEFAULT 'public',
+        "ownerId" UUID NOT NULL,
+        "ownerName" VARCHAR(100) NOT NULL,
+        "password" VARCHAR(200),
+        "memberCount" INTEGER DEFAULT 0,
+        "lastMessageAt" TIMESTAMPTZ,
+        "lastMessageText" VARCHAR(500),
+        "lastMessageUser" VARCHAR(100),
+        "deletedAt" TIMESTAMPTZ,
+        "dealId" UUID,
+        "isClosed" BOOLEAN DEFAULT false,
+        "closedReason" VARCHAR(300),
+        "createdAt" TIMESTAMPTZ DEFAULT NOW(),
+        "updatedAt" TIMESTAMPTZ DEFAULT NOW()
       )`,
       `CREATE TABLE IF NOT EXISTS "ChatMessages" (
         "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        "chatId" UUID NOT NULL, "userId" UUID NOT NULL, "userName" VARCHAR(100) NOT NULL,
-        "text" TEXT NOT NULL, "createdAt" TIMESTAMPTZ DEFAULT NOW()
+        "chatId" UUID NOT NULL,
+        "userId" UUID NOT NULL,
+        "userName" VARCHAR(100) NOT NULL,
+        "text" TEXT NOT NULL,
+        "isAdmin" BOOLEAN DEFAULT false,
+        "isSystem" BOOLEAN DEFAULT false,
+        "createdAt" TIMESTAMPTZ DEFAULT NOW()
       )`,
       `CREATE TABLE IF NOT EXISTS "ChatMembers" (
         "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        "chatId" UUID NOT NULL, "userId" UUID NOT NULL,
+        "chatId" UUID NOT NULL,
+        "userId" UUID NOT NULL,
         "joinedAt" TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE("chatId","userId")
       )`,
+
+      // Ensure ENUM values exist (safe — errors ignored)
+      `DO $$ BEGIN ALTER TYPE "enum_Transactions_type" ADD VALUE IF NOT EXISTS 'adjustment'; EXCEPTION WHEN others THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TYPE "enum_Transactions_type" ADD VALUE IF NOT EXISTS 'freeze'; EXCEPTION WHEN others THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TYPE "enum_Transactions_type" ADD VALUE IF NOT EXISTS 'unfreeze'; EXCEPTION WHEN others THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TYPE "enum_Transactions_type" ADD VALUE IF NOT EXISTS 'commission'; EXCEPTION WHEN others THEN NULL; END $$`,
+
+      // Indexes
       `CREATE INDEX IF NOT EXISTS "idx_chatmsg_chatid" ON "ChatMessages"("chatId","createdAt" DESC)`,
       `CREATE INDEX IF NOT EXISTS "idx_chatmember_chatid" ON "ChatMembers"("chatId")`,
+      `CREATE INDEX IF NOT EXISTS "idx_products_seller" ON "Products"("sellerId")`,
+      `CREATE INDEX IF NOT EXISTS "idx_deals_buyer" ON "Deals"("buyerId")`,
+      `CREATE INDEX IF NOT EXISTS "idx_deals_seller" ON "Deals"("sellerId")`,
+      `CREATE INDEX IF NOT EXISTS "idx_tx_user" ON "Transactions"("userId")`,
 
-      // v2 migrations — new columns
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "banUntil" TIMESTAMPTZ`,
-      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "banReason" VARCHAR(500)`,
-      `ALTER TABLE "ChatMessages" ADD COLUMN IF NOT EXISTS "isAdmin" BOOLEAN DEFAULT false`,
-      `ALTER TABLE "ChatMessages" ADD COLUMN IF NOT EXISTS "isSystem" BOOLEAN DEFAULT false`,
-      `ALTER TABLE "Chats" ADD COLUMN IF NOT EXISTS "dealId" UUID`,
-      `ALTER TABLE "Chats" ADD COLUMN IF NOT EXISTS "isClosed" BOOLEAN DEFAULT false`,
-      `ALTER TABLE "Chats" ADD COLUMN IF NOT EXISTS "closedReason" VARCHAR(300)`,
-      `ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "deliveryData" TEXT`,
+      // Users — all columns
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "photoUrl"        TEXT`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "frozenBalance"   DECIMAL(12,2) DEFAULT 0`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalDeposited"  DECIMAL(12,2) DEFAULT 0`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalWithdrawn"  DECIMAL(12,2) DEFAULT 0`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalSales"      INTEGER DEFAULT 0`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "totalPurchases"  INTEGER DEFAULT 0`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "rating"          DECIMAL(3,2) DEFAULT 5`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "reviewCount"     INTEGER DEFAULT 0`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isSubAdmin"      BOOLEAN DEFAULT false`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isMainAdmin"     BOOLEAN DEFAULT false`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isBanned"        BOOLEAN DEFAULT false`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "banUntil"        TIMESTAMPTZ`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "banReason"       VARCHAR(500)`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isVerified"      BOOLEAN DEFAULT false`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "lastActive"      TIMESTAMPTZ`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isOnline"        BOOLEAN DEFAULT false`,
+
+      // Products — all columns
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "game"         VARCHAR(100)`,
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "server"       VARCHAR(100)`,
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "platform"     VARCHAR(100)`,
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "region"       VARCHAR(100)`,
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "deliveryType" VARCHAR(50) DEFAULT 'digital'`,
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "deliveryData" TEXT`,
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "stock"        INTEGER DEFAULT 1`,
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "sold"         INTEGER DEFAULT 0`,
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "isPromoted"   BOOLEAN DEFAULT false`,
+      `ALTER TABLE "Products" ADD COLUMN IF NOT EXISTS "promotedUntil" TIMESTAMPTZ`,
+
+      // Deals — all columns
+      `ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "deliveryData"    TEXT`,
       `ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "sellerDelivered" BOOLEAN DEFAULT false`,
-      `ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "adminNote" TEXT`,
+      `ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "adminNote"       TEXT`,
+      `ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "resolvedById"    UUID`,
+      `ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "resolvedAt"      TIMESTAMPTZ`,
+      `ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "buyerConfirmed"  BOOLEAN DEFAULT false`,
+      `ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "autoCompleteAt"  TIMESTAMPTZ`,
+
+      // Transactions — all columns
+      `ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "cryptoBotInvoiceId"  VARCHAR(200)`,
+      `ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "cryptoBotPayUrl"     TEXT`,
+      `ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "cryptoBotTransferId" VARCHAR(200)`,
+      `ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "cryptoAddress"       VARCHAR(200)`,
+      `ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "balanceBefore"       DECIMAL(12,2)`,
+      `ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "balanceAfter"        DECIMAL(12,2)`,
+      `ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "dealId"              UUID`,
+
+      // Chats — extra columns (safe even if table created above already has them)
+      `ALTER TABLE "Chats" ADD COLUMN IF NOT EXISTS "dealId"          UUID`,
+      `ALTER TABLE "Chats" ADD COLUMN IF NOT EXISTS "isClosed"        BOOLEAN DEFAULT false`,
+      `ALTER TABLE "Chats" ADD COLUMN IF NOT EXISTS "closedReason"    VARCHAR(300)`,
+
+      // ChatMessages — extra columns
+      `ALTER TABLE "ChatMessages" ADD COLUMN IF NOT EXISTS "isAdmin"  BOOLEAN DEFAULT false`,
+      `ALTER TABLE "ChatMessages" ADD COLUMN IF NOT EXISTS "isSystem" BOOLEAN DEFAULT false`,
     ];
 
+    let migrationErrors = 0;
     for (const sql of migrations) {
-      try { await sequelize.query(sql); } catch (_) {}
+      try {
+        await sequelize.query(sql);
+      } catch (e) {
+        migrationErrors++;
+        console.warn('⚠ Migration skipped:', e.message.slice(0, 120));
+      }
     }
-    console.log('✅ Migrations done');
+    console.log(`✅ Migrations done (${migrationErrors} skipped/already exist)`);
 
     // Ensure admin
     const adminTgId = process.env.ADMIN_TELEGRAM_ID;
