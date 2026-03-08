@@ -16,7 +16,35 @@ async function isMember(chatId, userId) {
 }
 
 function sanitize(chat, userId) {
-  const plain = chat.toJSON ? chat.toJSON() : chat;\n  return {\n    id:              plain.id,\n    name:            plain.name,\n    type:            plain.type,\n    ownerId:         plain.ownerId,\n    ownerName:       plain.ownerName,\n    memberCount:     plain.memberCount || 0,\n    lastMessageAt:   plain.lastMessageAt,\n    lastMessageText: plain.lastMessageText,\n    lastMessageUser: plain.lastMessageUser,\n    hasPassword:     plain.type === 'private',\n    isClosed:        plain.isClosed || false,\n    closedReason:    plain.closedReason || null,\n    dealId:          plain.dealId || null,\n    createdAt:       plain.createdAt,\n  };\n}\n\n// ─── GET /chats/:id — single chat ────────────────────────────────────────────\nrouter.get('/:id', auth, async (req, res) => {\n  try {\n    const chat = await Chat.findOne({ where: { id: req.params.id, deletedAt: null } });\n    if (!chat) return res.status(404).json({ error: 'Чат не найден' });\n    // Only members or admins can see chat\n    const isMemberResult = await ChatMember.findOne({ where: { chatId: chat.id, userId: req.userId } });\n    if (!isMemberResult && !req.user?.isAdmin) return res.status(403).json({ error: 'Нет доступа' });\n    res.json(sanitize(chat, req.userId));\n  } catch { res.status(500).json({ error: 'Ошибка' }); }\n});\n
+  const plain = chat.toJSON ? chat.toJSON() : chat;
+  return {
+    id:              plain.id,
+    name:            plain.name,
+    type:            plain.type,
+    ownerId:         plain.ownerId,
+    ownerName:       plain.ownerName,
+    memberCount:     plain.memberCount || 0,
+    lastMessageAt:   plain.lastMessageAt,
+    lastMessageText: plain.lastMessageText,
+    lastMessageUser: plain.lastMessageUser,
+    hasPassword:     plain.type === 'private',
+    isClosed:        plain.isClosed || false,
+    closedReason:    plain.closedReason || null,
+    dealId:          plain.dealId || null,
+    createdAt:       plain.createdAt,
+  };
+}
+
+// ─── GET /chats/:id — single chat ────────────────────────────────────────────
+router.get('/:id', auth, async (req, res) => {
+  try {
+    const chat = await Chat.findOne({ where: { id: req.params.id, deletedAt: null } });
+    if (!chat) return res.status(404).json({ error: 'Чат не найден' });
+    const isMemberResult = await ChatMember.findOne({ where: { chatId: chat.id, userId: req.userId } });
+    if (!isMemberResult && !req.user?.isAdmin) return res.status(403).json({ error: 'Нет доступа' });
+    res.json(sanitize(chat, req.userId));
+  } catch { res.status(500).json({ error: 'Ошибка' }); }
+});
 
 // ─── GET /chats ───────────────────────────────────────────────────────────────
 router.get('/', auth, async (req, res) => {
@@ -46,15 +74,14 @@ router.post('/', auth, async (req, res) => {
   }
 
   const chat = await Chat.create({
-    name:      name.trim(),
+    name:        name.trim(),
     type,
-    ownerId:   req.userId,
-    ownerName: req.user.firstName || req.user.username || 'User',
-    password:  type === 'private' ? password.trim() : null,
+    ownerId:     req.userId,
+    ownerName:   req.user.firstName || req.user.username || 'User',
+    password:    type === 'private' ? password.trim() : null,
     memberCount: 0,
   });
 
-  // Creator becomes first member
   await ChatMember.create({ chatId: chat.id, userId: req.userId });
   await chat.update({ memberCount: 1 });
 
@@ -72,7 +99,6 @@ router.post('/:id/join', auth, async (req, res) => {
       return res.status(403).json({ error: 'Неверный пароль' });
   }
 
-  // Upsert member
   await ChatMember.findOrCreate({ where: { chatId: chat.id, userId: req.userId } });
   const count = await ChatMember.count({ where: { chatId: chat.id } });
   await chat.update({ memberCount: count });
@@ -86,9 +112,9 @@ router.get('/:id/messages', auth, async (req, res) => {
   if (!chat) return res.status(404).json({ error: 'Чат не найден' });
 
   const messages = await ChatMessage.findAll({
-    where:  { chatId: chat.id },
-    order:  [['createdAt', 'ASC']],
-    limit:  100,
+    where: { chatId: chat.id },
+    order: [['createdAt', 'ASC']],
+    limit: 100,
   });
 
   res.json(messages.map(m => ({
@@ -97,6 +123,8 @@ router.get('/:id/messages', auth, async (req, res) => {
     userId:   m.userId,
     userName: m.userName,
     text:     m.text,
+    isAdmin:  m.isAdmin || false,
+    isSystem: m.isSystem || false,
     ts:       m.createdAt,
   })));
 });
@@ -111,6 +139,10 @@ router.delete('/:id', auth, async (req, res) => {
   await ChatMessage.destroy({ where: { chatId: chat.id } });
   await ChatMember.destroy({ where: { chatId: chat.id } });
   await chat.update({ deletedAt: new Date() });
+
+  if (global.io) {
+    global.io.to(`chat:${chat.id}`).emit('chat:deleted', { chatId: chat.id, reason: 'Чат удалён' });
+  }
 
   res.json({ success: true });
 });
