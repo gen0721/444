@@ -139,15 +139,21 @@ router.post('/users/:id/balance', adminAuth, async (req, res) => {
       if (newBal < 0) { await dbTx.rollback(); return res.status(400).json({ error: 'Баланс не может быть отрицательным' }); }
 
       await user.update({ balance: newBal }, { transaction: dbTx });
-      await Transaction.create({
-        userId:       user.id,
-        type:         'adjustment',
-        amount:       newBal - prev,
-        status:       'completed',
-        description:  `Admin: ${reason}`,
-        balanceBefore: prev,
-        balanceAfter:  newBal,
-      }, { transaction: dbTx });
+      // Use raw SQL to avoid ENUM issues with Transaction model
+      await sequelize.query(
+        `INSERT INTO "Transactions" (id, "userId", type, amount, status, description, "balanceBefore", "balanceAfter", "createdAt", "updatedAt")
+         VALUES (gen_random_uuid(), :userId, 'adjustment', :amount, 'completed', :desc, :before, :after, NOW(), NOW())`,
+        {
+          replacements: {
+            userId: user.id,
+            amount: newBal - prev,
+            desc:   `Admin: ${reason}`,
+            before: prev,
+            after:  newBal,
+          },
+          transaction: dbTx,
+        }
+      );
       await dbTx.commit();
 
       notify.notifyBalanceAdjust(user, newBal - prev, reason).catch(() => {});
