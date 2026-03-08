@@ -1,16 +1,17 @@
 const express = require('express');
+const notify  = require('../utils/notify');
 const router  = express.Router();
 const https   = require('https');
+const crypto  = require('crypto');
 const { User, Transaction } = require('../models/index');
-const { auth } = require('../middleware/auth');
+const { auth, verifyCryptoBotWebhook } = require('../middleware/auth');
+const sequelize = require('../db');
 
-// ─── CryptoBot API helper ────────────────────────────────────────────────────
-// Docs: https://help.crypt.bot/crypto-pay-api
 const CRYPTO_TOKEN = process.env.CRYPTO_BOT_TOKEN || process.env.CRYPTOBOT_TOKEN;
 
 function cryptoBot(method, body = {}) {
   return new Promise((resolve, reject) => {
-    const data = JSON.stringify(body);
+    const data    = JSON.stringify(body);
     const options = {
       hostname: 'pay.crypt.bot',
       path:     `/api/${method}`,
@@ -35,20 +36,30 @@ function cryptoBot(method, body = {}) {
   });
 }
 
-// ─── Currency to CryptoBot asset map ─────────────────────────────────────────
-// CryptoBot supports: USDT, TON, BTC, ETH, LTC, BNB, TRX, USDC
-const ASSET_MAP = {
-  USDT: 'USDT',
-  BTC:  'BTC',
-  TON:  'TON',
-  ETH:  'ETH',
-  USDC: 'USDC',
-};
+// Helper — insert transaction via raw SQL to avoid ENUM issues
+async function insertTx({ userId, type, amount, currency = 'USDT', status = 'pending', description = '', invoiceId = null, payUrl = null, transferId = null, balanceBefore = null, balanceAfter = null, dealId = null }, dbTx) {
+  const id = crypto.randomUUID();
+  await sequelize.query(
+    `INSERT INTO "Transactions"
+       (id, "userId", type, amount, currency, status, description,
+        "cryptoBotInvoiceId", "cryptoBotPayUrl", "cryptoBotTransferId",
+        "balanceBefore", "balanceAfter", "dealId", "createdAt", "updatedAt")
+     VALUES
+       (:id, :userId, :type, :amount, :currency, :status, :description,
+        :invoiceId, :payUrl, :transferId,
+        :balanceBefore, :balanceAfter, :dealId, NOW(), NOW())`,
+    {
+      replacements: { id, userId, type, amount, currency, status, description, invoiceId, payUrl, transferId, balanceBefore, balanceAfter, dealId },
+      transaction: dbTx,
+    }
+  );
+  return id;
+}
 
-// ─── Minimum withdrawals (in USD equivalent) ─────────────────────────────────
-const MIN_WITHDRAW = 2; // $2 minimum
+const ASSET_MAP = { USDT: 'USDT', BTC: 'BTC', TON: 'TON', ETH: 'ETH', USDC: 'USDC' };
+const MIN_WITHDRAW = 2;
 
-// ─── POST /deposit — create invoice ──────────────────────────────────────────
+// ─── POST /deposit ────────────────────────────────────────────────────────────
 router.post('/deposit', auth, async (req, res) => {
   try {
     const { amount, currency = 'USDT' } = req.body;
@@ -61,54 +72,66 @@ router.post('/deposit', auth, async (req, res) => {
     if (CRYPTO_TOKEN) {
       const inv = await cryptoBot('createInvoice', {
         asset,
-        amount:            String(amt.toFixed(2)),
-        description:       `GIVIHUB пополнение — ${req.user.username || req.user.firstName || 'User'}`,
-        payload:           JSON.stringify({ userId: req.userId, type: 'deposit' }),
-        allow_comments:    false,
-        allow_anonymous:   false,
-        expires_in:        3600,
+        amount:          String(amt.toFixed(2)),
+        description:     `GIVIHUB пополнение — ${req.user.username || req.user.firstName || 'User'}`,
+        payload:         JSON.stringify({ userId: req.userId, type: 'deposit' }),
+        allow_comments:  false,
+        allow_anonymous: false,
+        expires_in:      3600,
       });
-
       if (inv.ok) {
         payUrl    = inv.result.bot_invoice_url;
         invoiceId = String(inv.result.invoice_id);
       } else {
         console.error('CryptoBot createInvoice error:', inv.error);
-        return res.status(500).json({ error: 'Не удалось создать счёт в CryptoBot: ' + (inv.error?.name || 'Unknown') });
+        return res.status(500).json({ error: 'Не удалось создать счёт: ' + (inv.error?.name || 'Unknown') });
       }
     }
 
-    const tx = await Transaction.create({
-      userId:              req.userId,
-      type:                'deposit',
-      amount:              amt,
-      currency:            asset,
-      status:              CRYPTO_TOKEN ? 'pending' : 'completed',
-      description:         'Deposit via CryptoBot',
-      cryptoBotInvoiceId:  invoiceId,
-      cryptoBotPayUrl:     payUrl,
-      balanceBefore:       parseFloat(req.user.balance),
+    const txId = await insertTx({
+      userId:       req.userId,
+      type:         'deposit',
+      amount:       amt,
+      currency:     asset,
+      status:       CRYPTO_TOKEN ? 'pending' : 'completed',
+      description:  'Deposit via CryptoBot',
+      invoiceId,
+      payUrl,
+      balanceBefore: parseFloat(req.user.balance),
     });
 
-    // Dev mode — credit immediately without CryptoBot
     if (!CRYPTO_TOKEN) {
-      const user   = await User.findByPk(req.userId);
-      const newBal = parseFloat(user.balance) + amt;
-      await user.update({ balance: newBal, totalDeposited: parseFloat(user.totalDeposited) + amt });
-      await tx.update({ status: 'completed', balanceAfter: newBal });
-      return res.json({ success: true, balance: newBal, tx, devMode: true });
+      // Dev mode — credit immediately
+      const t = await sequelize.transaction();
+      try {
+        const user   = await User.findByPk(req.userId, { transaction: t, lock: true });
+        const newBal = parseFloat(user.balance) + amt;
+        await user.update({ balance: newBal, totalDeposited: parseFloat(user.totalDeposited || 0) + amt }, { transaction: t });
+        await sequelize.query(
+          `UPDATE "Transactions" SET status='completed', "balanceAfter"=:after, "updatedAt"=NOW() WHERE id=:id`,
+          { replacements: { after: newBal, id: txId }, transaction: t }
+        );
+        await t.commit();
+        notify.notifyDeposit(user, amt, asset).catch(() => {});
+        return res.json({ success: true, balance: newBal, txId, devMode: true });
+      } catch (e) { await t.rollback(); throw e; }
     }
 
-    res.json({ success: true, payUrl, invoiceId, tx });
+    res.json({ success: true, payUrl, invoiceId, txId });
   } catch (e) {
     console.error('Deposit error:', e.message);
-    res.status(500).json({ error: 'Не удалось создать депозит' });
+    res.status(500).json({ error: 'Не удалось создать депозит: ' + e.message });
   }
 });
 
-// ─── POST /webhook/cryptobot — CryptoBot payment callback ────────────────────
+// ─── POST /webhook/cryptobot ──────────────────────────────────────────────────
 router.post('/webhook/cryptobot', async (req, res) => {
   try {
+    if (!verifyCryptoBotWebhook(req)) {
+      console.warn('CryptoBot webhook: invalid signature');
+      return res.status(401).json({ ok: false });
+    }
+
     const { update_type, payload } = req.body;
     if (update_type !== 'invoice_paid') return res.json({ ok: true });
 
@@ -116,15 +139,16 @@ router.post('/webhook/cryptobot', async (req, res) => {
     const tx        = await Transaction.findOne({ where: { cryptoBotInvoiceId: invoiceId } });
     if (!tx || tx.status === 'completed') return res.json({ ok: true });
 
-    const user   = await User.findByPk(tx.userId);
-    const amt    = parseFloat(tx.amount);
-    const newBal = parseFloat(user.balance) + amt;
-
-    await user.update({
-      balance:        newBal,
-      totalDeposited: parseFloat(user.totalDeposited) + amt,
-    });
-    await tx.update({ status: 'completed', balanceAfter: newBal });
+    const dbTx = await sequelize.transaction();
+    try {
+      const user   = await User.findByPk(tx.userId, { transaction: dbTx, lock: true });
+      const amt    = parseFloat(tx.amount);
+      const newBal = parseFloat(user.balance) + amt;
+      await user.update({ balance: newBal, totalDeposited: parseFloat(user.totalDeposited || 0) + amt }, { transaction: dbTx });
+      await tx.update({ status: 'completed', balanceAfter: newBal }, { transaction: dbTx });
+      await dbTx.commit();
+      notify.notifyDeposit(user, amt, tx.currency).catch(() => {});
+    } catch (e) { await dbTx.rollback(); throw e; }
 
     res.json({ ok: true });
   } catch (e) {
@@ -133,149 +157,102 @@ router.post('/webhook/cryptobot', async (req, res) => {
   }
 });
 
-// ─── POST /withdraw — АВТОМАТИЧЕСКИЙ вывод через CryptoBot transfer ──────────
-// CryptoBot API: POST /transfer
-// Требования:
-//   - spend_id: уникальный ID транзакции (для идемпотентности)
-//   - user_id:  Telegram ID получателя (НЕ username, именно числовой ID)
-//   - asset:    валюта (USDT, TON, BTC...)
-//   - amount:   сумма
-//   - comment:  комментарий (отобразится пользователю в боте)
-//
-// ВАЖНО: пользователь должен сначала запустить @CryptoBot (/start)
-// и разрешить получение платежей от приложений.
-
+// ─── POST /withdraw ───────────────────────────────────────────────────────────
 router.post('/withdraw', auth, async (req, res) => {
   try {
     const { amount, currency = 'USDT', address } = req.body;
-    // address здесь = Telegram ID пользователя (число)
-    // Фронтенд должен передавать telegramId пользователя
-
     const amt = parseFloat(amount);
-    if (!amt || amt < MIN_WITHDRAW) {
+    if (!amt || amt < MIN_WITHDRAW)
       return res.status(400).json({ error: `Минимальный вывод — $${MIN_WITHDRAW}` });
-    }
 
-    const user = await User.findByPk(req.userId);
-    if (parseFloat(user.balance) < amt) {
-      return res.status(400).json({ error: 'Недостаточно средств' });
-    }
+    const asset   = ASSET_MAP[currency] || 'USDT';
+    const spendId = `withdraw_${req.userId}_${Date.now()}`;
 
-    const asset    = ASSET_MAP[currency] || 'USDT';
-    const prevBal  = parseFloat(user.balance);
-    const newBal   = prevBal - amt;
-    const spendId  = `withdraw_${req.userId}_${Date.now()}`; // уникальный ID
-
-    // Определяем telegramId получателя
-    // Если передан address — используем его, иначе берём из профиля
     const recipientTgId = address
       ? parseInt(address, 10)
-      : user.telegramId
-        ? parseInt(user.telegramId, 10)
-        : null;
+      : req.user.telegramId ? parseInt(req.user.telegramId, 10) : null;
 
-    if (!recipientTgId || isNaN(recipientTgId)) {
-      return res.status(400).json({
-        error: 'Не найден Telegram ID. Войдите через Telegram или укажите Telegram ID получателя.',
-      });
-    }
+    if (!recipientTgId || isNaN(recipientTgId))
+      return res.status(400).json({ error: 'Не найден Telegram ID. Войдите через Telegram или укажите Telegram ID.' });
 
-    // Сначала списываем с баланса (чтобы не было двойного вывода)
-    await user.update({
-      balance:        newBal,
-      totalWithdrawn: parseFloat(user.totalWithdrawn) + amt,
-    });
+    // Atomic balance deduct
+    const dbTx = await sequelize.transaction();
+    let txId, prevBal, newBal;
+    try {
+      const user = await User.findByPk(req.userId, { transaction: dbTx, lock: true });
+      prevBal    = parseFloat(user.balance);
+      if (prevBal < amt) { await dbTx.rollback(); return res.status(400).json({ error: 'Недостаточно средств' }); }
+      newBal = prevBal - amt;
+      await user.update({ balance: newBal, totalWithdrawn: parseFloat(user.totalWithdrawn || 0) + amt }, { transaction: dbTx });
+      txId = await insertTx({
+        userId:        req.userId,
+        type:          'withdrawal',
+        amount:        -amt,
+        currency:      asset,
+        status:        'pending',
+        description:   `Вывод ${amt} ${asset} на TG ID ${recipientTgId}`,
+        balanceBefore: prevBal,
+        balanceAfter:  newBal,
+      }, dbTx);
+      await dbTx.commit();
+    } catch (e) { await dbTx.rollback(); throw e; }
 
-    // Создаём транзакцию со статусом pending
-    const tx = await Transaction.create({
-      userId:       req.userId,
-      type:         'withdrawal',
-      amount:       -amt,
-      currency:     asset,
-      status:       'pending',
-      description:  `Вывод ${amt} ${asset} на Telegram ID ${recipientTgId}`,
-      balanceBefore: prevBal,
-      balanceAfter:  newBal,
-    });
-
-    // ── Автоматический перевод через CryptoBot ──
     if (CRYPTO_TOKEN) {
       try {
         const transfer = await cryptoBot('transfer', {
-          user_id:  recipientTgId,   // Telegram User ID получателя
-          asset,                      // валюта: USDT, TON, BTC...
-          amount:   String(amt.toFixed(2)),   // сумма
-          spend_id: spendId,          // уникальный ID для идемпотентности
-          comment:  `GIVIHUB вывод ${amt} ${asset}`,  // увидит пользователь в боте
-          disable_send_notification: false,  // отправить уведомление в Telegram
+          user_id:  recipientTgId,
+          asset,
+          amount:   String(amt.toFixed(2)),
+          spend_id: spendId,
+          comment:  `GIVIHUB вывод ${amt} ${asset}`,
+          disable_send_notification: false,
         });
 
         if (transfer.ok) {
-          // Успешно — обновляем транзакцию
-          await tx.update({
-            status:            'completed',
-            cryptoBotTransferId: String(transfer.result?.transfer_id || ''),
-          });
-
-          return res.json({
-            success:    true,
-            balance:    newBal,
-            transferId: transfer.result?.transfer_id,
-            message:    `✅ ${amt} ${asset} отправлено на ваш Telegram`,
-            tx,
-          });
+          await sequelize.query(
+            `UPDATE "Transactions" SET status='completed', "cryptoBotTransferId"=:tid, "updatedAt"=NOW() WHERE id=:id`,
+            { replacements: { tid: String(transfer.result?.transfer_id || ''), id: txId } }
+          );
+          notify.notifyWithdraw(req.user, amt, asset).catch(() => {});
+          return res.json({ success: true, balance: newBal, transferId: transfer.result?.transfer_id, message: `✅ ${amt} ${asset} отправлено на ваш Telegram` });
         } else {
-          // CryptoBot вернул ошибку — возвращаем деньги
-          console.error('CryptoBot transfer error:', transfer.error);
+          // Rollback balance
+          const rollbackTx = await sequelize.transaction();
+          try {
+            const u = await User.findByPk(req.userId, { transaction: rollbackTx, lock: true });
+            await u.update({ balance: parseFloat(u.balance) + amt, totalWithdrawn: Math.max(0, parseFloat(u.totalWithdrawn || 0) - amt) }, { transaction: rollbackTx });
+            await sequelize.query(`UPDATE "Transactions" SET status='failed', "balanceAfter"=:prev, "updatedAt"=NOW() WHERE id=:id`, { replacements: { prev: prevBal, id: txId }, transaction: rollbackTx });
+            await rollbackTx.commit();
+          } catch { await rollbackTx.rollback(); }
 
-          await user.update({
-            balance:        prevBal,  // вернуть баланс
-            totalWithdrawn: parseFloat(user.totalWithdrawn) - amt,
-          });
-          await tx.update({ status: 'failed', balanceAfter: prevBal });
-
-          // Понятные сообщения об ошибках CryptoBot
-          const errCode = transfer.error?.code;
           const errName = transfer.error?.name || '';
-
-          let userMessage = 'Не удалось выполнить перевод через CryptoBot';
-          if (errCode === 400 || errName.includes('USER_NOT_FOUND')) {
-            userMessage = 'Пользователь не найден в CryptoBot. Откройте @CryptoBot и нажмите /start';
-          } else if (errName.includes('NOT_ENOUGH_COINS')) {
-            userMessage = 'Недостаточно средств на счёте CryptoBot (системная ошибка)';
-          } else if (errName.includes('DUPLICATE_SPEND_ID')) {
-            userMessage = 'Дублирующий запрос. Попробуйте позже';
-          }
-
-          return res.status(400).json({ error: userMessage });
+          let msg = 'Не удалось выполнить перевод через CryptoBot';
+          if (transfer.error?.code === 400 || errName.includes('USER_NOT_FOUND'))
+            msg = 'Пользователь не найден в CryptoBot. Откройте @CryptoBot и нажмите /start';
+          else if (errName.includes('NOT_ENOUGH_COINS'))
+            msg = 'Недостаточно средств на счёте CryptoBot';
+          else if (errName.includes('DUPLICATE_SPEND_ID'))
+            msg = 'Дублирующий запрос. Попробуйте позже';
+          return res.status(400).json({ error: msg });
         }
       } catch (transferErr) {
-        // Сетевая ошибка — возвращаем деньги
-        console.error('CryptoBot transfer network error:', transferErr.message);
-
-        await user.update({
-          balance:        prevBal,
-          totalWithdrawn: parseFloat(user.totalWithdrawn) - amt,
-        });
-        await tx.update({ status: 'failed', balanceAfter: prevBal });
-
+        const rollbackTx = await sequelize.transaction();
+        try {
+          const u = await User.findByPk(req.userId, { transaction: rollbackTx, lock: true });
+          await u.update({ balance: parseFloat(u.balance) + amt, totalWithdrawn: Math.max(0, parseFloat(u.totalWithdrawn || 0) - amt) }, { transaction: rollbackTx });
+          await sequelize.query(`UPDATE "Transactions" SET status='failed', "updatedAt"=NOW() WHERE id=:id`, { replacements: { id: txId }, transaction: rollbackTx });
+          await rollbackTx.commit();
+        } catch { await rollbackTx.rollback(); }
         return res.status(500).json({ error: 'Ошибка соединения с CryptoBot. Попробуйте позже.' });
       }
     } else {
-      // Dev mode без CryptoBot — просто списываем (имитация)
-      await tx.update({ status: 'completed' });
-      return res.json({
-        success: true,
-        balance: newBal,
-        message: `[DEV MODE] ${amt} ${asset} отправлено (CryptoBot не настроен)`,
-        tx,
-        devMode: true,
-      });
+      await sequelize.query(`UPDATE "Transactions" SET status='completed', "updatedAt"=NOW() WHERE id=:id`, { replacements: { id: txId } });
+      notify.notifyWithdraw(req.user, amt, asset).catch(() => {});
+      return res.json({ success: true, balance: newBal, message: `[DEV] ${amt} ${asset} отправлено`, devMode: true });
     }
-
   } catch (e) {
     console.error('Withdraw error:', e.message);
-    res.status(500).json({ error: 'Ошибка вывода средств' });
+    res.status(500).json({ error: 'Ошибка вывода средств: ' + e.message });
   }
 });
 
@@ -285,18 +262,12 @@ router.get('/transactions', auth, async (req, res) => {
     const { type, page = 1, limit = 30 } = req.query;
     const where = { userId: req.userId };
     if (type && type !== 'all') where.type = type;
-
     const { rows: transactions, count: total } = await Transaction.findAndCountAll({
-      where,
-      order: [['createdAt', 'DESC']],
-      limit:  parseInt(limit),
-      offset: (parseInt(page) - 1) * parseInt(limit),
+      where, order: [['createdAt', 'DESC']],
+      limit: parseInt(limit), offset: (parseInt(page) - 1) * parseInt(limit),
     });
-
     res.json({ transactions, total });
-  } catch {
-    res.status(500).json({ error: 'Не удалось загрузить транзакции' });
-  }
+  } catch (e) { res.status(500).json({ error: 'Не удалось загрузить транзакции' }); }
 });
 
 // ─── GET /balance ─────────────────────────────────────────────────────────────
@@ -309,9 +280,7 @@ router.get('/balance', auth, async (req, res) => {
       totalDeposited: parseFloat(u.totalDeposited) || 0,
       totalWithdrawn: parseFloat(u.totalWithdrawn) || 0,
     });
-  } catch {
-    res.status(500).json({ error: 'Не удалось загрузить баланс' });
-  }
+  } catch { res.status(500).json({ error: 'Не удалось загрузить баланс' }); }
 });
 
 module.exports = router;
