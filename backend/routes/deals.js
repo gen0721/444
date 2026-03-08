@@ -1,6 +1,7 @@
 const express    = require('express');
 const notify     = require('../utils/notify');
 const router     = express.Router();
+const crypto     = require('crypto');
 const { Op }     = require('sequelize');
 const { Deal, Product, User, Transaction, sequelize } = require('../models/index');
 const { auth, adminAuth } = require('../middleware/auth');
@@ -8,6 +9,16 @@ const { auth, adminAuth } = require('../middleware/auth');
 const COMMISSION  = 0.05;
 const userAttrs   = ['id','username','firstName','photoUrl','rating','totalSales'];
 
+// Raw SQL insert to avoid ENUM issues
+async function insertTx({ userId, type, amount, status = 'completed', description = '', dealId = null }, dbTx) {
+  const id = crypto.randomUUID();
+  await sequelize.query(
+    `INSERT INTO "Transactions" (id, "userId", type, amount, currency, status, description, "dealId", "createdAt", "updatedAt")
+     VALUES (:id, :userId, :type, :amount, 'USDT', :status, :description, :dealId, NOW(), NOW())`,
+    { replacements: { id, userId, type, amount, status, description, dealId }, transaction: dbTx }
+  );
+  return id;
+}
 // ─────────────────────────────────────────────────────────────────────────────
 // completeDeal — wrapped in DB transaction to prevent race conditions
 // ─────────────────────────────────────────────────────────────────────────────
@@ -90,11 +101,11 @@ async function refundDeal(deal) {
     await deal.update({ status: 'refunded', resolvedAt: new Date() }, { transaction: t });
     await Product.update({ status: 'active' }, { where: { id: deal.productId }, transaction: t });
 
-    await Transaction.create({
+    await insertTx({
       userId: deal.buyerId, type: 'refund', amount: amt,
       status: 'completed', description: `Возврат по спору: +${amt.toFixed(2)}$`,
       dealId: deal.id,
-    }, { transaction: t });
+    }, t);
   });
 }
 
@@ -151,9 +162,9 @@ router.post('/', auth, async (req, res) => {
       await deal.update({ adminNote: dealChat.id });  // store chatId for reference
     } catch (e) { console.warn('Deal chat creation failed:', e.message); }
 
-    await Transaction.create({
-      userId: req.userId, type: 'freeze', amount: -buyerPays, status: 'completed',
-      description: `Оплата заморожена: ${product.title} ($${buyerPays.toFixed(2)} вкл. 5% комиссию)`,
+    await insertTx({
+      userId: req.userId, type: 'freeze', amount: -buyerPays,
+      status: 'completed', description: `Оплата заморожена: ${product.title} ($${buyerPays.toFixed(2)} вкл. 5% комиссию)`,
       dealId: deal.id,
     });
 
