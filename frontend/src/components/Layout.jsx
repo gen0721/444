@@ -48,7 +48,7 @@ export default function Layout() {
   }
 
   return (
-    <div style={{ height:'100vh', height:'100dvh', display:'flex', flexDirection:'column', background:'var(--bg)', position:'relative', overflow:'hidden' }}>
+    <div style={{ height:'100dvh', display:'flex', flexDirection:'column', background:'var(--bg)', position:'relative', overflow:'hidden' }}>
       <GameBackground />
 
       <div className="scroll" style={{ flex:1, position:'relative', zIndex:2, paddingBottom:'calc(68px + env(safe-area-inset-bottom, 0px))' }}>
