@@ -155,7 +155,7 @@ body { font-family: var(--font-body); background: var(--bg); color: var(--t1); -
 /* ── ANIMS ── */
 @keyframes fadeUp  { from{opacity:0;transform:translateY(18px)} to{opacity:1;transform:translateY(0)} }
 @keyframes popIn   { from{opacity:0;transform:scale(0.88)} to{opacity:1;transform:scale(1)} }
-@keyframes slideUp { from{opacity:0;transform:translateY(60px)} to{opacity:1;transform:translateY(0)} }
+@keyframes slideUp { from{opacity:0;transform:translateY(100%)} to{opacity:1;transform:translateY(0)} }
 @keyframes rotateSpin { to { transform: rotate(360deg); } }
 @keyframes floatY  { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
 @keyframes glowPulse {
