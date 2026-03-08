@@ -200,6 +200,9 @@ export default function DealPage() {
             <IC.Chat s={16} c="#a78bfa"/> 💬 ОТКРЫТЬ ЧАТ СДЕЛКИ
           </button>
         )}
+
+        {/* Commission info */}
+        <div style={{ padding: '10px 13px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, fontSize: 11 }}>
           <div>
             <div style={{ color: 'var(--t3)', marginBottom: 2 }}>Покупатель заплатил</div>
             <div style={{ fontWeight: 700, color: '#f87171' }}>${price.toFixed(2)}</div>
