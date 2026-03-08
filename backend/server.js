@@ -344,6 +344,18 @@ async function init() {
       )`,
       `CREATE INDEX IF NOT EXISTS "idx_chatmsg_chatid" ON "ChatMessages"("chatId","createdAt" DESC)`,
       `CREATE INDEX IF NOT EXISTS "idx_chatmember_chatid" ON "ChatMembers"("chatId")`,
+
+      // v2 migrations — new columns
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "banUntil" TIMESTAMPTZ`,
+      `ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "banReason" VARCHAR(500)`,
+      `ALTER TABLE "ChatMessages" ADD COLUMN IF NOT EXISTS "isAdmin" BOOLEAN DEFAULT false`,
+      `ALTER TABLE "ChatMessages" ADD COLUMN IF NOT EXISTS "isSystem" BOOLEAN DEFAULT false`,
+      `ALTER TABLE "Chats" ADD COLUMN IF NOT EXISTS "dealId" UUID`,
+      `ALTER TABLE "Chats" ADD COLUMN IF NOT EXISTS "isClosed" BOOLEAN DEFAULT false`,
+      `ALTER TABLE "Chats" ADD COLUMN IF NOT EXISTS "closedReason" VARCHAR(300)`,
+      `ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "deliveryData" TEXT`,
+      `ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "sellerDelivered" BOOLEAN DEFAULT false`,
+      `ALTER TABLE "Deals" ADD COLUMN IF NOT EXISTS "adminNote" TEXT`,
     ];
 
     for (const sql of migrations) {
