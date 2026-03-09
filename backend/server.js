@@ -417,6 +417,15 @@ async function init() {
       `DO $$ BEGIN ALTER TYPE "enum_Transactions_type" ADD VALUE IF NOT EXISTS 'unfreeze'; EXCEPTION WHEN others THEN NULL; END $$`,
       `DO $$ BEGIN ALTER TYPE "enum_Transactions_type" ADD VALUE IF NOT EXISTS 'commission'; EXCEPTION WHEN others THEN NULL; END $$`,
 
+      // Convert ENUM columns to VARCHAR so Sequelize doesn't conflict with existing ENUMs
+      `DO $$ BEGIN ALTER TABLE "Products"     ALTER COLUMN "status" TYPE VARCHAR(30); EXCEPTION WHEN others THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Deals"        ALTER COLUMN "status" TYPE VARCHAR(30); EXCEPTION WHEN others THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Transactions" ALTER COLUMN "type"   TYPE VARCHAR(30); EXCEPTION WHEN others THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Transactions" ALTER COLUMN "status" TYPE VARCHAR(20); EXCEPTION WHEN others THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Chats"        ALTER COLUMN "type"   TYPE VARCHAR(20); EXCEPTION WHEN others THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Broadcasts"   ALTER COLUMN "targetType" TYPE VARCHAR(20); EXCEPTION WHEN others THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Broadcasts"   ALTER COLUMN "status"     TYPE VARCHAR(20); EXCEPTION WHEN others THEN NULL; END $$`,
+
       // Indexes
       `CREATE INDEX IF NOT EXISTS "idx_chatmsg_chatid" ON "ChatMessages"("chatId","createdAt" DESC)`,
       `CREATE INDEX IF NOT EXISTS "idx_chatmember_chatid" ON "ChatMembers"("chatId")`,
