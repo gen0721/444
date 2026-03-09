@@ -489,8 +489,32 @@ async function init() {
         await sequelize.query(sql);
       } catch (e) {
         migrationErrors++;
-        console.warn('⚠ Migration skipped:', e.message.slice(0, 120));
+        console.warn('⚠ Migration skipped:', e.message.slice(0, 200));
       }
+    }
+
+    // Force-add critical columns using DO $$ blocks that never fail
+    const forceCols = [
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "platform"     VARCHAR(100); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "region"       VARCHAR(100); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "game"         VARCHAR(100); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "server"       VARCHAR(100); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "deliveryType" VARCHAR(50) DEFAULT 'digital'; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "deliveryData" TEXT;         EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "stock"        INTEGER DEFAULT 1;     EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "sold"         INTEGER DEFAULT 0;     EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "isPromoted"   BOOLEAN DEFAULT false; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "promotedUntil" TIMESTAMPTZ;          EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Transactions" ADD COLUMN "cryptoBotInvoiceId"  VARCHAR(200); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Transactions" ADD COLUMN "cryptoBotPayUrl"     TEXT;         EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Transactions" ADD COLUMN "cryptoBotTransferId" VARCHAR(200); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Transactions" ADD COLUMN "balanceBefore"       DECIMAL(12,2); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Transactions" ADD COLUMN "balanceAfter"        DECIMAL(12,2); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Transactions" ADD COLUMN "dealId"              UUID;          EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+    ];
+    for (const sql of forceCols) {
+      try { await sequelize.query(sql); }
+      catch (e) { console.warn('⚠ Force-col failed:', e.message.slice(0, 150)); }
     }
     console.log(`✅ Migrations done (${migrationErrors} skipped/already exist)`);
 
