@@ -12,7 +12,6 @@ export default function Layout() {
   const tabs = [
     { to:'/',        label:'Главная',  Icon: IC.Home   },
     { to:'/wallet',  label:'Баланс',   Icon: IC.Wallet },
-    { to:'/chats',   label:'Чаты',     Icon: IC.Chat   },
     { to:'/create',  special: true                     },
     ...(user?.isAdmin
       ? [{ to:'/admin', label:'Панель', Icon: IC.Crown }]
