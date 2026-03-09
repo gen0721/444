@@ -1,10 +1,18 @@
 const { Op } = require('sequelize');
-const { Deal, User, Chat, ChatMessage, ChatMember } = require('./models/index');
-const { completeDeal } = require('./routes/deals');
+
+// Lazy getters — avoid circular dependency issues at startup
+function getModels() {
+  return require('./models/index');
+}
+function getCompleteDeal() {
+  return require('./routes/deals').completeDeal;
+}
 
 // ── Auto-complete deals ───────────────────────────────────────────────────────
 async function runAutoComplete() {
   try {
+    const { Deal } = getModels();
+    const completeDeal = getCompleteDeal();
     const overdue = await Deal.findAll({
       where: { status: 'frozen', autoCompleteAt: { [Op.lte]: new Date() } },
     });
@@ -18,6 +26,7 @@ async function runAutoComplete() {
 // ── Mark inactive users offline ───────────────────────────────────────────────
 async function markOfflineUsers() {
   try {
+    const { User } = getModels();
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
     await User.update({ isOnline: false }, { where: { isOnline: true, lastActive: { [Op.lt]: tenMinAgo } } });
   } catch (e) { console.error('Cron offline error:', e.message); }
@@ -30,6 +39,7 @@ const warnedChats = new Set(); // chatIds already warned
 
 async function cleanupChats() {
   try {
+    const { Chat, ChatMessage, ChatMember } = getModels();
     const now   = new Date();
     const chats = await Chat.findAll({ where: { deletedAt: null } });
 
