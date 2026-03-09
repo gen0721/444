@@ -291,6 +291,18 @@ async function init() {
 
     // Run all migrations via raw SQL — no Sequelize sync to avoid ENUM conflicts
     const migrations = [
+      // Drop problematic FK constraints (safe — errors ignored if not exist)
+      `ALTER TABLE "Transactions" DROP CONSTRAINT IF EXISTS "Transactions_userId_fkey"`,
+      `ALTER TABLE "Transactions" DROP CONSTRAINT IF EXISTS "Transactions_dealId_fkey"`,
+      `ALTER TABLE "Deals" DROP CONSTRAINT IF EXISTS "Deals_buyerId_fkey"`,
+      `ALTER TABLE "Deals" DROP CONSTRAINT IF EXISTS "Deals_sellerId_fkey"`,
+      `ALTER TABLE "Deals" DROP CONSTRAINT IF EXISTS "Deals_productId_fkey"`,
+      `ALTER TABLE "Products" DROP CONSTRAINT IF EXISTS "Products_sellerId_fkey"`,
+      `ALTER TABLE "ChatMessages" DROP CONSTRAINT IF EXISTS "ChatMessages_chatId_fkey"`,
+      `ALTER TABLE "ChatMessages" DROP CONSTRAINT IF EXISTS "ChatMessages_userId_fkey"`,
+      `ALTER TABLE "ChatMembers" DROP CONSTRAINT IF EXISTS "ChatMembers_chatId_fkey"`,
+      `ALTER TABLE "ChatMembers" DROP CONSTRAINT IF EXISTS "ChatMembers_userId_fkey"`,
+
       // Core tables
       `CREATE TABLE IF NOT EXISTS "Users" (
         "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
