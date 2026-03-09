@@ -12,6 +12,8 @@ import DealPage from './pages/DealPage'
 import AdminPage from './pages/AdminPage'
 import AuthPage from './pages/AuthPage'
 import VoiceRoomsPage from './pages/VoiceRoomsPage'
+import ChatsPage from './pages/ChatsPage'
+import LegalPage from './pages/LegalPage'
 import './styles/global.css'
 
 export default function App() {
@@ -83,6 +85,8 @@ export default function App() {
           <Route path="deal/:id" element={user ? <DealPage/> : <Navigate to="/auth" replace/>}/>
           <Route path="admin" element={user?.isAdmin ? <AdminPage/> : <Navigate to="/" replace/>}/>
           <Route path="rooms" element={user ? <VoiceRoomsPage/> : <Navigate to="/auth" replace/>}/>
+          <Route path="chats" element={user ? <ChatsPage/> : <Navigate to="/auth" replace/>}/>
+          <Route path="legal/:type" element={<LegalPage/>}/>
         </Route>
       </Routes>
     </BrowserRouter>
