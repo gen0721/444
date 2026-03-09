@@ -349,13 +349,20 @@ router.post('/broadcast', adminAuth, async (req, res) => {
     );
 
     let whereClause = {};
-    if (targetType === 'single')  whereClause = { id: targetUserId };
-    else if (targetType === 'admins') whereClause = { isAdmin: true };
+    if (targetType === 'single') {
+      const uid = String(targetUserId || '').trim();
+      if (!uid) return res.status(400).json({ error: 'Укажите пользователя' });
+      whereClause = { id: uid };
+    } else if (targetType === 'admins') {
+      whereClause = { isAdmin: true };
+    }
 
     const recipients = await User.findAll({
       where: whereClause,
       attributes: ['id','username','firstName','telegramId'],
     });
+
+    console.log(`Broadcast "${targetType}": found ${recipients.length} recipients`, targetType==='single' ? `targetUserId=${targetUserId}` : '');
 
     await sequelize.query(
       `UPDATE "Broadcasts" SET "sentCount"=:cnt, status='sent', "updatedAt"=NOW() WHERE id=:id`,
