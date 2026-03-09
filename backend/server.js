@@ -19,7 +19,7 @@ const io     = new Server(server, {
 });
 
 const sequelize = require('./db');
-const { User, Chat, ChatMessage, ChatMember } = require('./models/index');
+const { User, Deal, Chat, ChatMessage, ChatMember } = require('./models/index');
 const { rooms, sanitizeRoom } = require('./routes/rooms');
 const { startCron } = require('./cron');
 
@@ -493,18 +493,18 @@ async function init() {
       }
     }
 
-    // Force-add critical columns using DO $$ blocks that never fail
+    // Force-add critical columns — DO $$ never throws, raw:true bypasses Sequelize parser
     const forceCols = [
-      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "platform"     VARCHAR(100); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
-      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "region"       VARCHAR(100); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
-      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "game"         VARCHAR(100); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
-      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "server"       VARCHAR(100); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
-      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "deliveryType" VARCHAR(50) DEFAULT 'digital'; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
-      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "deliveryData" TEXT;         EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
-      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "stock"        INTEGER DEFAULT 1;     EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
-      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "sold"         INTEGER DEFAULT 0;     EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
-      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "isPromoted"   BOOLEAN DEFAULT false; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
-      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "promotedUntil" TIMESTAMPTZ;          EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "platform"      VARCHAR(100); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "region"        VARCHAR(100); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "game"          VARCHAR(100); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "server"        VARCHAR(100); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "deliveryType"  VARCHAR(50) DEFAULT 'digital'; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "deliveryData"  TEXT;         EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "stock"         INTEGER DEFAULT 1;     EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "sold"          INTEGER DEFAULT 0;     EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "isPromoted"    BOOLEAN DEFAULT false; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+      `DO $$ BEGIN ALTER TABLE "Products" ADD COLUMN "promotedUntil" TIMESTAMPTZ;           EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
       `DO $$ BEGIN ALTER TABLE "Transactions" ADD COLUMN "cryptoBotInvoiceId"  VARCHAR(200); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
       `DO $$ BEGIN ALTER TABLE "Transactions" ADD COLUMN "cryptoBotPayUrl"     TEXT;         EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
       `DO $$ BEGIN ALTER TABLE "Transactions" ADD COLUMN "cryptoBotTransferId" VARCHAR(200); EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
@@ -513,9 +513,12 @@ async function init() {
       `DO $$ BEGIN ALTER TABLE "Transactions" ADD COLUMN "dealId"              UUID;          EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
     ];
     for (const sql of forceCols) {
-      try { await sequelize.query(sql); }
+      try { await sequelize.query(sql, { raw: true }); }
       catch (e) { console.warn('⚠ Force-col failed:', e.message.slice(0, 150)); }
     }
+    // Verify platform column exists
+    const cols = await sequelize.query(`SELECT column_name FROM information_schema.columns WHERE table_name='Products' AND column_name='platform'`, { raw: true });
+    console.log('✅ platform column check:', cols[0].length > 0 ? 'EXISTS' : 'MISSING!');
     console.log(`✅ Migrations done (${migrationErrors} skipped/already exist)`);
 
     // Ensure admin
@@ -537,7 +540,7 @@ async function init() {
       } catch (e) { console.log('⚠ Admin setup:', e.message); }
     }
 
-    startCron();
+    startCron({ User, Deal, Chat, ChatMessage, ChatMember });
     const PORT = process.env.PORT || 5000;
     server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server on port ${PORT}`));
   } catch (err) {
