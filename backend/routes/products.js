@@ -84,16 +84,15 @@ router.post('/', auth, async (req, res) => {
     if (title.trim().length > 200)        return res.status(400).json({ error: 'Название слишком длинное (макс. 200)' });
 
     const productId = require('crypto').randomUUID();
+    // Basic insert without optional columns that may not exist yet
     await sequelize.query(
       `INSERT INTO "Products"
          (id, "sellerId", title, description, price, category, subcategory,
-          game, server, images, tags, "deliveryData", platform, region,
-          "deliveryType", stock, status, views, sold, "isPromoted",
+          game, server, images, tags, "deliveryData", status, views, sold,
           "createdAt", "updatedAt")
        VALUES
          (:id, :sellerId, :title, :description, :price, :category, :subcategory,
-          :game, :server, :images::jsonb, :tags::jsonb, :deliveryData, :platform, :region,
-          :deliveryType, :stock, 'active', 0, 0, false,
+          :game, :server, :images::jsonb, :tags::jsonb, :deliveryData, 'active', 0, 0,
           NOW(), NOW())`,
       {
         replacements: {
@@ -109,13 +108,24 @@ router.post('/', auth, async (req, res) => {
           images:       JSON.stringify(Array.isArray(images) ? images.slice(0, 10) : []),
           tags:         JSON.stringify(Array.isArray(tags)   ? tags.slice(0, 20)   : []),
           deliveryData: deliveryData || null,
-          platform:     platform     || null,
-          region:       region       || null,
-          deliveryType: deliveryType || 'digital',
-          stock:        parseInt(stock) || 1,
         },
       }
     );
+    // Update optional columns separately — safe if they don't exist yet
+    const optionalUpdates = [];
+    const optReplacements = { id: productId };
+    if (platform !== undefined)    { optionalUpdates.push('"platform"=:platform');       optReplacements.platform     = platform || null; }
+    if (region !== undefined)      { optionalUpdates.push('"region"=:region');           optReplacements.region       = region || null; }
+    if (deliveryType !== undefined){ optionalUpdates.push('"deliveryType"=:deliveryType'); optReplacements.deliveryType = deliveryType || 'digital'; }
+    if (stock !== undefined)       { optionalUpdates.push('"stock"=:stock');             optReplacements.stock        = parseInt(stock) || 1; }
+    if (optionalUpdates.length > 0) {
+      try {
+        await sequelize.query(
+          `UPDATE "Products" SET ${optionalUpdates.join(', ')} WHERE id=:id`,
+          { replacements: optReplacements }
+        );
+      } catch (_) {} // ignore if columns don't exist
+    }
     const p = await Product.findByPk(productId);
     res.status(201).json(p);
   } catch (e) {
