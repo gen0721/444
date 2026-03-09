@@ -21,6 +21,8 @@ export default function WalletPage() {
   const [working, setWorking] = useState(false)
   const rate = useRate()
 
+  const [payMethod, setPayMethod] = useState('crypto') // 'crypto' | 'lava'
+
   useEffect(() => {
     if (!user) { navigate('/auth'); return }
     loadTxs()
@@ -43,6 +45,25 @@ export default function WalletPage() {
   const openModal = (type) => {
     setModal(type); setAmount('')
     if (type === 'withdraw' && user?.telegramId) setTgId(String(user.telegramId))
+  }
+
+  // ── Deposit via Lava ──────────────────────────────────────────────────────
+  const depositLava = async () => {
+    const amt = parseFloat(amount)
+    if (!amt || amt < 1) return toast.error('Минимум $1')
+    setWorking(true)
+    try {
+      const { data } = await api.post('/wallet/deposit/lava', { amount: amt })
+      if (data.payUrl) {
+        window.open(data.payUrl, '_blank')
+        toast.success('Откроется страница оплаты Lava')
+        setModal(null); setAmount('')
+        loadTxs()
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.error || 'Ошибка Lava')
+    }
+    setWorking(false)
   }
 
   // ── Deposit ──────────────────────────────────────────────────────────────
@@ -198,15 +219,35 @@ export default function WalletPage() {
       {modal === 'deposit' && (
         <BottomModal onClose={() => { setModal(null); setAmount('') }}>
           <ModalTitle color="#a78bfa">↓ ПОПОЛНЕНИЕ</ModalTitle>
+
+          {/* Payment method selector */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:16 }}>
+            {[
+              { v:'crypto', icon:'🤖', label:'CryptoBot', desc:'USDT, TON, BTC' },
+              { v:'lava',   icon:'🔥', label:'Lava',      desc:'Карта РФ, СБП' },
+            ].map(m => (
+              <button key={m.v} onClick={() => setPayMethod(m.v)} style={{ padding:'10px 8px', borderRadius:12, cursor:'pointer', textAlign:'center', background:payMethod===m.v?'rgba(167,139,250,0.12)':'rgba(255,255,255,0.03)', border:`1.5px solid ${payMethod===m.v?'rgba(167,139,250,0.5)':'rgba(255,255,255,0.07)'}`, color:payMethod===m.v?'#a78bfa':'var(--t3)', transition:'all 0.15s' }}>
+                <div style={{ fontSize:20, marginBottom:3 }}>{m.icon}</div>
+                <div style={{ fontFamily:'var(--font-display)', fontWeight:700, fontSize:11 }}>{m.label}</div>
+                <div style={{ fontSize:10, color:'var(--t3)', marginTop:2 }}>{m.desc}</div>
+              </button>
+            ))}
+          </div>
+
           <QuickAmounts value={amount} onChange={setAmount} color="#a78bfa"/>
           <FieldLabel>СУММА (USD)</FieldLabel>
           <AmountInput value={amount} onChange={setAmount} rate={rate}/>
-          <FieldLabel>ВАЛЮТА</FieldLabel>
-          <NetPicker value={network} onChange={setNetwork}/>
+          {payMethod === 'crypto' && <>
+            <FieldLabel>ВАЛЮТА</FieldLabel>
+            <NetPicker value={network} onChange={setNetwork}/>
+          </>}
           <InfoBox color="#a78bfa">
-            Нажмите «Пополнить» → откроется @CryptoBot → оплатите → баланс зачислится автоматически
+            {payMethod === 'lava'
+              ? '🔥 Оплата картой РФ или СБП — откроется страница Lava, баланс зачислится автоматически'
+              : 'Нажмите «Пополнить» → откроется @CryptoBot → оплатите → баланс зачислится автоматически'}
           </InfoBox>
-          <ModalBtns onCancel={() => { setModal(null); setAmount('') }} onConfirm={deposit}
+          <ModalBtns onCancel={() => { setModal(null); setAmount('') }}
+            onConfirm={payMethod === 'lava' ? depositLava : deposit}
             confirmLabel="↓ Пополнить" confirmCls="btn-violet" loading={working}/>
         </BottomModal>
       )}
