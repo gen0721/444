@@ -1,11 +1,8 @@
-/**
- * Background jobs — run inside the same process as the server
- */
 const { Op } = require('sequelize');
 const { Deal, User, Chat, ChatMessage, ChatMember } = require('./models/index');
 const { completeDeal } = require('./routes/deals');
 
-// ── Auto-complete frozen deals past autoCompleteAt ────────────────────────────
+// ── Auto-complete deals ───────────────────────────────────────────────────────
 async function runAutoComplete() {
   try {
     const overdue = await Deal.findAll({
@@ -13,60 +10,74 @@ async function runAutoComplete() {
     });
     for (const deal of overdue) {
       try { await completeDeal(deal); console.log(`⏰ Auto-completed deal ${deal.id}`); }
-      catch (e) { console.error(`⚠ Auto-complete failed for deal ${deal.id}:`, e.message); }
+      catch (e) { console.error(`⚠ Auto-complete failed ${deal.id}:`, e.message); }
     }
-    if (overdue.length > 0) console.log(`✅ Auto-completed ${overdue.length} deal(s)`);
   } catch (e) { console.error('Cron auto-complete error:', e.message); }
 }
 
-// ── Mark inactive users as offline ───────────────────────────────────────────
+// ── Mark inactive users offline ───────────────────────────────────────────────
 async function markOfflineUsers() {
   try {
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
-    const [count] = await User.update(
-      { isOnline: false },
-      { where: { isOnline: true, lastActive: { [Op.lt]: tenMinAgo } } }
-    );
-    if (count > 0) console.log(`🔴 Marked ${count} user(s) offline`);
-  } catch (e) { console.error('Cron offline marker error:', e.message); }
+    await User.update({ isOnline: false }, { where: { isOnline: true, lastActive: { [Op.lt]: tenMinAgo } } });
+  } catch (e) { console.error('Cron offline error:', e.message); }
 }
 
-// ── Chat cleanup ──────────────────────────────────────────────────────────────
-// Public chat:  deleted after 15 min with 0 online members
-// Private chat: deleted after 1  min with 0 online members
+// ── Chat cleanup with warnings ────────────────────────────────────────────────
+// Public:  warn at 4min idle → delete at 5min
+// Private: warn at 45s idle  → delete at 1min
+const warnedChats = new Set(); // chatIds already warned
+
 async function cleanupChats() {
   try {
-    const now  = new Date();
+    const now   = new Date();
     const chats = await Chat.findAll({ where: { deletedAt: null } });
 
     for (const chat of chats) {
-      // Real-time online count tracked in global.chatActiveSockets by server.js
-      const onlineCount = global.chatActiveSockets
+      const online = global.chatActiveSockets
         ? (global.chatActiveSockets.get(chat.id) || 0)
         : 0;
 
-      if (onlineCount > 0) continue; // someone is online — keep alive
-
-      const gracePeriod = chat.type === 'private'
-        ? 1  * 60 * 1000   // 1 min for private
-        : 15 * 60 * 1000;  // 15 min for public
+      if (online > 0) {
+        // Someone online — reset warn state
+        warnedChats.delete(chat.id);
+        continue;
+      }
 
       const lastActive = chat.lastMessageAt || chat.createdAt;
       const idleMs     = now - new Date(lastActive);
 
-      if (idleMs >= gracePeriod) {
-        console.log(`🗑 Auto-deleting ${chat.type} chat "${chat.name}" (idle ${Math.round(idleMs/60000)}min)`);
+      // Timers
+      const isPrivate   = chat.type === 'private';
+      const warnMs      = isPrivate ?  45 * 1000 :  4 * 60 * 1000;
+      const deleteMs    = isPrivate ?  60 * 1000 :  5 * 60 * 1000;
+      const warnMsg     = isPrivate
+        ? '⚠️ Приватный чат будет удалён через 15 секунд — никого нет онлайн'
+        : '⚠️ Чат будет удалён через 1 минуту — никого нет онлайн';
 
-        // Notify connected sockets BEFORE deleting
+      // Warn phase
+      if (idleMs >= warnMs && idleMs < deleteMs && !warnedChats.has(chat.id)) {
+        warnedChats.add(chat.id);
+        console.log(`⚠ Warning "${chat.name}" (idle ${Math.round(idleMs/1000)}s)`);
         if (global.chatIo) {
-          global.chatIo.to(`chat:${chat.id}`).emit('chat:deleted', {
-            chatId: chat.id,
-            reason: chat.type === 'private'
-              ? 'Приватный чат удалён — все участники покинули его'
-              : 'Чат удалён из-за неактивности (15 мин)',
+          global.chatIo.to(`chat:${chat.id}`).emit('chat:warning', {
+            chatId:    chat.id,
+            message:   warnMsg,
+            countdown: Math.round((deleteMs - idleMs) / 1000),
           });
         }
+      }
 
+      // Delete phase
+      if (idleMs >= deleteMs) {
+        warnedChats.delete(chat.id);
+        const reason = isPrivate
+          ? 'Приватный чат удалён — все участники покинули его'
+          : 'Публичный чат удалён из-за неактивности (5 мин)';
+        console.log(`🗑 Deleting "${chat.name}" (idle ${Math.round(idleMs/60000)}min)`);
+        if (global.chatIo) {
+          global.chatIo.to(`chat:${chat.id}`).emit('chat:deleted', { chatId: chat.id, reason });
+        }
         await ChatMessage.destroy({ where: { chatId: chat.id } });
         await ChatMember.destroy({ where: { chatId: chat.id } });
         await chat.update({ deletedAt: now, memberCount: 0 });
@@ -78,13 +89,13 @@ async function cleanupChats() {
 function startCron() {
   setInterval(runAutoComplete,  5 * 60 * 1000);
   setInterval(markOfflineUsers, 2 * 60 * 1000);
-  setInterval(cleanupChats,     60 * 1000);      // every 1 min for fast private-chat detection
+  setInterval(cleanupChats,     15 * 1000);   // every 15s for accurate timers
 
-  setTimeout(runAutoComplete,  5_000);
-  setTimeout(markOfflineUsers, 5_000);
-  setTimeout(cleanupChats,    10_000);
+  setTimeout(runAutoComplete,  5000);
+  setTimeout(markOfflineUsers, 5000);
+  setTimeout(cleanupChats,     8000);
 
-  console.log('⏰ Cron started: deals(5min) · offline(2min) · chat-cleanup(1min)');
+  console.log('⏰ Cron: deals(5min) · offline(2min) · chats(15s)');
 }
 
 module.exports = { startCron };
