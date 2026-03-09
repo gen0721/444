@@ -230,7 +230,9 @@ router.post('/withdraw', auth, async (req, res) => {
           const errCode = transfer.error?.code;
           console.error('CryptoBot transfer failed:', JSON.stringify(transfer.error));
           let msg = `Ошибка CryptoBot: ${errName || errCode || 'Unknown'}`;
-          if (errName.includes('USER_NOT_FOUND') || errCode === 400)
+          if (errName.includes('INSUFFICIENT_FUNDS'))
+            msg = 'Недостаточно средств на балансе CryptoBot приложения';
+          else if (errName.includes('USER_NOT_FOUND') || errCode === 400)
             msg = 'Пользователь не найден в CryptoBot — откройте @CryptoBot и нажмите /start';
           else if (errName.includes('NOT_ENOUGH_COINS'))
             msg = 'Недостаточно монет на балансе CryptoBot приложения';
