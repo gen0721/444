@@ -51,6 +51,11 @@ app.get('/lava-verify_ac8a22137e7e05e2.html', (req, res) => {
   res.send('lava-verify=ac8a22137e7e05e2');
 });
 
+// Enot.io domain verification
+app.get('/enot_e342b96a.html', (req, res) => {
+  res.send('enot=e342b96a');
+});
+
 const frontendDist = path.join(__dirname, '../frontend/dist');
 app.use(express.static(frontendDist));
 app.get('*', (req, res) => res.sendFile(path.join(frontendDist, 'index.html')));
