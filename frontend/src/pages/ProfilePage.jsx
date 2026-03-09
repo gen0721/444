@@ -186,6 +186,22 @@ export default function ProfilePage() {
           )
         )}
       </div>
+
+      {/* Legal links */}
+      <div style={{ padding:'8px 14px 24px', display:'flex', flexWrap:'wrap', gap:'8px', justifyContent:'center' }}>
+        {[
+          { to:'/legal/privacy',  label:'Политика конфиденциальности' },
+          { to:'/legal/offer',    label:'Договор оферты' },
+          { to:'/legal/refund',   label:'Условия возврата' },
+          { to:'/legal/contacts', label:'Контакты' },
+        ].map(l => (
+          <button key={l.to} onClick={() => navigate(l.to)} style={{
+            background:'none', border:'none', cursor:'pointer',
+            fontSize:'11px', color:'var(--t3)', textDecoration:'underline',
+            fontFamily:'var(--font-display)', letterSpacing:'0.03em', padding:'4px 6px',
+          }}>{l.label}</button>
+        ))}
+      </div>
     </div>
   )
 }
