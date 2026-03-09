@@ -1,150 +1,132 @@
 const express  = require('express');
 const router   = express.Router();
+const crypto   = require('crypto');
 const { Op }   = require('sequelize');
-const { Chat, ChatMessage, ChatMember, User } = require('../models/index');
+const { Chat, ChatMessage, ChatMember, User, sequelize } = require('../models/index');
 const { auth } = require('../middleware/auth');
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-async function getMemberIds(chatId) {
-  const members = await ChatMember.findAll({ where: { chatId }, attributes: ['userId'] });
-  return members.map(m => m.userId);
-}
-
-async function isMember(chatId, userId) {
-  const m = await ChatMember.findOne({ where: { chatId, userId } });
-  return !!m;
-}
-
-function sanitize(chat, userId) {
-  const plain = chat.toJSON ? chat.toJSON() : chat;
+function sanitize(chat) {
+  const p = chat.toJSON ? chat.toJSON() : chat;
   return {
-    id:              plain.id,
-    name:            plain.name,
-    type:            plain.type,
-    ownerId:         plain.ownerId,
-    ownerName:       plain.ownerName,
-    memberCount:     plain.memberCount || 0,
-    lastMessageAt:   plain.lastMessageAt,
-    lastMessageText: plain.lastMessageText,
-    lastMessageUser: plain.lastMessageUser,
-    hasPassword:     plain.type === 'private',
-    isClosed:        plain.isClosed || false,
-    closedReason:    plain.closedReason || null,
-    dealId:          plain.dealId || null,
-    createdAt:       plain.createdAt,
+    id:              p.id,
+    name:            p.name,
+    type:            p.type,
+    ownerId:         p.ownerId,
+    ownerName:       p.ownerName,
+    memberCount:     p.memberCount || 0,
+    lastMessageAt:   p.lastMessageAt,
+    lastMessageText: p.lastMessageText,
+    lastMessageUser: p.lastMessageUser,
+    hasPassword:     p.type === 'private',
+    isClosed:        p.isClosed || false,
+    closedReason:    p.closedReason || null,
+    dealId:          p.dealId || null,
+    createdAt:       p.createdAt,
   };
 }
 
-// ─── GET /chats/:id — single chat ────────────────────────────────────────────
+// GET /chats
+router.get('/', auth, async (req, res) => {
+  try {
+    const chats = await Chat.findAll({
+      where: { deletedAt: null },
+      order: [['lastMessageAt', 'DESC NULLS LAST'], ['createdAt', 'DESC']],
+    });
+    res.json(chats.map(sanitize));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /chats/:id
 router.get('/:id', auth, async (req, res) => {
   try {
     const chat = await Chat.findOne({ where: { id: req.params.id, deletedAt: null } });
     if (!chat) return res.status(404).json({ error: 'Чат не найден' });
-    const isMemberResult = await ChatMember.findOne({ where: { chatId: chat.id, userId: req.userId } });
-    if (!isMemberResult && !req.user?.isAdmin) return res.status(403).json({ error: 'Нет доступа' });
-    res.json(sanitize(chat, req.userId));
-  } catch { res.status(500).json({ error: 'Ошибка' }); }
+    res.json(sanitize(chat));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ─── GET /chats ───────────────────────────────────────────────────────────────
-router.get('/', auth, async (req, res) => {
-  const chats = await Chat.findAll({
-    where: { deletedAt: null },
-    order: [
-      ['lastMessageAt', 'DESC NULLS LAST'],
-      ['createdAt', 'DESC'],
-    ],
-  });
-  res.json(chats.map(c => sanitize(c, req.userId)));
-});
-
-// ─── POST /chats — create ─────────────────────────────────────────────────────
+// POST /chats — create via raw SQL to avoid ENUM issues
 router.post('/', auth, async (req, res) => {
-  const { name, type = 'public', password } = req.body;
+  try {
+    const { name, type = 'public', password } = req.body;
+    if (!name?.trim())          return res.status(400).json({ error: 'Введите название чата' });
+    if (name.trim().length > 60) return res.status(400).json({ error: 'Название не более 60 символов' });
+    if (type === 'private') {
+      if (!password?.trim())            return res.status(400).json({ error: 'Укажите пароль' });
+      if (password.trim().length < 4)   return res.status(400).json({ error: 'Пароль минимум 4 символа' });
+    }
 
-  if (!name?.trim())
-    return res.status(400).json({ error: 'Введите название чата' });
-  if (name.trim().length > 60)
-    return res.status(400).json({ error: 'Название не более 60 символов' });
-  if (type === 'private') {
-    if (!password?.trim())
-      return res.status(400).json({ error: 'Укажите пароль для закрытого чата' });
-    if (password.trim().length < 4)
-      return res.status(400).json({ error: 'Пароль минимум 4 символа' });
-  }
+    const chatId    = crypto.randomUUID();
+    const ownerName = req.user.firstName || req.user.username || 'User';
+    const pw        = type === 'private' ? password.trim() : null;
 
-  const chat = await Chat.create({
-    name:        name.trim(),
-    type,
-    ownerId:     req.userId,
-    ownerName:   req.user.firstName || req.user.username || 'User',
-    password:    type === 'private' ? password.trim() : null,
-    memberCount: 0,
-  });
+    await sequelize.query(
+      `INSERT INTO "Chats" (id, name, type, "ownerId", "ownerName", password, "memberCount", "deletedAt", "isClosed", "createdAt", "updatedAt")
+       VALUES (:id, :name, :type, :ownerId, :ownerName, :password, 1, NULL, false, NOW(), NOW())`,
+      { replacements: { id: chatId, name: name.trim(), type, ownerId: req.userId, ownerName, password: pw } }
+    );
 
-  await ChatMember.create({ chatId: chat.id, userId: req.userId });
-  await chat.update({ memberCount: 1 });
+    await sequelize.query(
+      `INSERT INTO "ChatMembers" (id, "chatId", "userId", "joinedAt") VALUES (:id, :chatId, :userId, NOW()) ON CONFLICT DO NOTHING`,
+      { replacements: { id: crypto.randomUUID(), chatId, userId: req.userId } }
+    );
 
-  res.status(201).json(sanitize(chat, req.userId));
+    const chat = await Chat.findByPk(chatId);
+    res.status(201).json(sanitize(chat));
+  } catch (e) { console.error('Create chat error:', e.message); res.status(500).json({ error: e.message }); }
 });
 
-// ─── POST /chats/:id/join — verify password & add member ─────────────────────
+// POST /chats/:id/join
 router.post('/:id/join', auth, async (req, res) => {
-  const chat = await Chat.findOne({ where: { id: req.params.id, deletedAt: null } });
-  if (!chat) return res.status(404).json({ error: 'Чат не найден' });
-
-  if (chat.type === 'private') {
-    const { password } = req.body;
-    if (!password || password !== chat.password)
-      return res.status(403).json({ error: 'Неверный пароль' });
-  }
-
-  await ChatMember.findOrCreate({ where: { chatId: chat.id, userId: req.userId } });
-  const count = await ChatMember.count({ where: { chatId: chat.id } });
-  await chat.update({ memberCount: count });
-
-  res.json(sanitize(chat, req.userId));
+  try {
+    const chat = await Chat.findOne({ where: { id: req.params.id, deletedAt: null } });
+    if (!chat) return res.status(404).json({ error: 'Чат не найден' });
+    if (chat.type === 'private') {
+      const { password } = req.body;
+      if (!password || password !== chat.password)
+        return res.status(403).json({ error: 'Неверный пароль' });
+    }
+    await sequelize.query(
+      `INSERT INTO "ChatMembers" (id, "chatId", "userId", "joinedAt") VALUES (:id, :chatId, :userId, NOW()) ON CONFLICT DO NOTHING`,
+      { replacements: { id: crypto.randomUUID(), chatId: chat.id, userId: req.userId } }
+    );
+    const count = await ChatMember.count({ where: { chatId: chat.id } });
+    await chat.update({ memberCount: count });
+    res.json(sanitize(chat));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ─── GET /chats/:id/messages ──────────────────────────────────────────────────
+// GET /chats/:id/messages
 router.get('/:id/messages', auth, async (req, res) => {
-  const chat = await Chat.findOne({ where: { id: req.params.id, deletedAt: null } });
-  if (!chat) return res.status(404).json({ error: 'Чат не найден' });
-
-  const messages = await ChatMessage.findAll({
-    where: { chatId: chat.id },
-    order: [['createdAt', 'ASC']],
-    limit: 100,
-  });
-
-  res.json(messages.map(m => ({
-    id:       m.id,
-    chatId:   m.chatId,
-    userId:   m.userId,
-    userName: m.userName,
-    text:     m.text,
-    isAdmin:  m.isAdmin || false,
-    isSystem: m.isSystem || false,
-    ts:       m.createdAt,
-  })));
+  try {
+    const chat = await Chat.findOne({ where: { id: req.params.id, deletedAt: null } });
+    if (!chat) return res.status(404).json({ error: 'Чат не найден' });
+    const messages = await ChatMessage.findAll({
+      where: { chatId: chat.id },
+      order: [['createdAt', 'ASC']],
+      limit: 100,
+    });
+    res.json(messages.map(m => ({
+      id: m.id, chatId: m.chatId, userId: m.userId,
+      userName: m.userName, text: m.text,
+      isAdmin: m.isAdmin || false, isSystem: m.isSystem || false, ts: m.createdAt,
+    })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ─── DELETE /chats/:id — owner or admin delete ────────────────────────────────
+// DELETE /chats/:id
 router.delete('/:id', auth, async (req, res) => {
-  const chat = await Chat.findOne({ where: { id: req.params.id, deletedAt: null } });
-  if (!chat) return res.status(404).json({ error: 'Чат не найден' });
-  if (chat.ownerId !== req.userId && !req.user?.isAdmin)
-    return res.status(403).json({ error: 'Только владелец может удалить чат' });
-
-  await ChatMessage.destroy({ where: { chatId: chat.id } });
-  await ChatMember.destroy({ where: { chatId: chat.id } });
-  await chat.update({ deletedAt: new Date() });
-
-  if (global.io) {
-    global.io.to(`chat:${chat.id}`).emit('chat:deleted', { chatId: chat.id, reason: 'Чат удалён' });
-  }
-
-  res.json({ success: true });
+  try {
+    const chat = await Chat.findOne({ where: { id: req.params.id, deletedAt: null } });
+    if (!chat) return res.status(404).json({ error: 'Чат не найден' });
+    if (chat.ownerId !== req.userId && !req.user?.isAdmin)
+      return res.status(403).json({ error: 'Только владелец может удалить чат' });
+    await ChatMessage.destroy({ where: { chatId: chat.id } });
+    await ChatMember.destroy({ where: { chatId: chat.id } });
+    await chat.update({ deletedAt: new Date() });
+    global.io?.to(`chat:${chat.id}`).emit('chat:deleted', { chatId: chat.id, reason: 'Чат удалён владельцем' });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 module.exports = router;
