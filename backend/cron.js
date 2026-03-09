@@ -42,6 +42,8 @@ async function cleanupChats() {
     for (const chat of chats) {
       const online   = global.chatActiveSockets ? (global.chatActiveSockets.get(chat.id) || 0) : 0;
       if (online > 0) { warnedChats.delete(chat.id); continue; }
+      // Never auto-delete deal chats
+      if (chat.dealId) { warnedChats.delete(chat.id); continue; }
 
       const idleMs    = now - new Date(chat.lastMessageAt || chat.createdAt);
       const isPrivate = chat.type === 'private';
