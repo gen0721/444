@@ -46,6 +46,11 @@ app.use('/api/chats',      require('./routes/chats'));
 
 app.get('/health', (req, res) => res.json({ status: 'ok', ts: new Date() }));
 
+// Lava domain verification
+app.get('/lava-verify_ac8a22137e7e05e2.html', (req, res) => {
+  res.send('lava-verify=ac8a22137e7e05e2');
+});
+
 const frontendDist = path.join(__dirname, '../frontend/dist');
 app.use(express.static(frontendDist));
 app.get('*', (req, res) => res.sendFile(path.join(frontendDist, 'index.html')));
