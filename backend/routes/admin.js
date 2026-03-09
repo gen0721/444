@@ -341,14 +341,12 @@ router.post('/broadcast', adminAuth, async (req, res) => {
     if (targetType === 'single' && !targetUserId)
       return res.status(400).json({ error: 'Укажите пользователя для личной рассылки' });
 
-    const broadcast = await Broadcast.create({
-      senderId:     req.userId,
-      title:        title.trim(),
-      text:         text.trim(),
-      targetType,
-      targetUserId: targetType === 'single' ? targetUserId : null,
-      status:       'pending',
-    });
+    const bcId = require('crypto').randomUUID();
+    await sequelize.query(
+      `INSERT INTO "Broadcasts" (id, "senderId", title, text, "targetType", "targetUserId", "sentCount", status, "createdAt", "updatedAt")
+       VALUES (:id, :senderId, :title, :text, :targetType, :targetUserId, 0, 'pending', NOW(), NOW())`,
+      { replacements: { id: bcId, senderId: req.userId, title: title.trim(), text: text.trim(), targetType, targetUserId: targetType==='single' ? targetUserId : null } }
+    );
 
     let whereClause = {};
     if (targetType === 'single')  whereClause = { id: targetUserId };
@@ -359,7 +357,10 @@ router.post('/broadcast', adminAuth, async (req, res) => {
       attributes: ['id','username','firstName','telegramId'],
     });
 
-    await broadcast.update({ sentCount: recipients.length, status: 'sent' });
+    await sequelize.query(
+      `UPDATE "Broadcasts" SET "sentCount"=:cnt, status='sent', "updatedAt"=NOW() WHERE id=:id`,
+      { replacements: { cnt: recipients.length, id: bcId } }
+    );
 
     let telegramSent = 0;
     const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
@@ -375,7 +376,7 @@ ${text.trim()}`;
       }
     }
 
-    res.json({ success: true, sentCount: recipients.length, telegramSent, broadcast });
+    res.json({ success: true, sentCount: recipients.length, telegramSent, broadcastId: bcId });
   } catch (e) { console.error('Broadcast error:', e.message); res.status(500).json({ error: 'Failed' }); }
 });
 
