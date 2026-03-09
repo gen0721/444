@@ -162,6 +162,7 @@ router.post('/withdraw', auth, async (req, res) => {
   try {
     const { amount, currency = 'USDT', address } = req.body;
     const amt = parseFloat(amount);
+    console.log(`Withdraw request: userId=${req.userId} amount=${amt} currency=${currency} address=${address} userTgId=${req.user?.telegramId}`);
     if (!amt || amt < MIN_WITHDRAW)
       return res.status(400).json({ error: `Минимальный вывод — $${MIN_WITHDRAW}` });
 
@@ -226,13 +227,17 @@ router.post('/withdraw', auth, async (req, res) => {
           } catch { await rollbackTx.rollback(); }
 
           const errName = transfer.error?.name || '';
-          let msg = 'Не удалось выполнить перевод через CryptoBot';
-          if (transfer.error?.code === 400 || errName.includes('USER_NOT_FOUND'))
-            msg = 'Пользователь не найден в CryptoBot. Откройте @CryptoBot и нажмите /start';
+          const errCode = transfer.error?.code;
+          console.error('CryptoBot transfer failed:', JSON.stringify(transfer.error));
+          let msg = `Ошибка CryptoBot: ${errName || errCode || 'Unknown'}`;
+          if (errName.includes('USER_NOT_FOUND') || errCode === 400)
+            msg = 'Пользователь не найден в CryptoBot — откройте @CryptoBot и нажмите /start';
           else if (errName.includes('NOT_ENOUGH_COINS'))
-            msg = 'Недостаточно средств на счёте CryptoBot';
+            msg = 'Недостаточно монет на балансе CryptoBot приложения';
           else if (errName.includes('DUPLICATE_SPEND_ID'))
-            msg = 'Дублирующий запрос. Попробуйте позже';
+            msg = 'Дублирующий запрос — подождите минуту и попробуйте снова';
+          else if (errName.includes('FORBIDDEN') || errCode === 403)
+            msg = 'CryptoBot: нет доступа к переводу. Проверьте настройки бота';
           return res.status(400).json({ error: msg });
         }
       } catch (transferErr) {
