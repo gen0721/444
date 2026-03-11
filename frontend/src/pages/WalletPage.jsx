@@ -21,7 +21,7 @@ export default function WalletPage() {
   const [working, setWorking] = useState(false)
   const rate = useRate()
 
-  const [payMethod, setPayMethod] = useState('crypto') // 'crypto' | 'lava'
+  const [payMethod, setPayMethod] = useState('crypto') // 'crypto' | 'rukassa'
 
   useEffect(() => {
     if (!user) { navigate('/auth'); return }
@@ -47,21 +47,21 @@ export default function WalletPage() {
     if (type === 'withdraw' && user?.telegramId) setTgId(String(user.telegramId))
   }
 
-  // ── Deposit via Lava ──────────────────────────────────────────────────────
-  const depositLava = async () => {
+  // ── Deposit via RuKassa ───────────────────────────────────────────────────
+  const depositRukassa = async () => {
     const amt = parseFloat(amount)
     if (!amt || amt < 1) return toast.error('Минимум $1')
     setWorking(true)
     try {
-      const { data } = await api.post('/wallet/deposit/lava', { amount: amt })
+      const { data } = await api.post('/wallet/deposit/rukassa', { amount: amt })
       if (data.payUrl) {
         window.open(data.payUrl, '_blank')
-        toast.success('Откроется страница оплаты Lava')
+        toast.success('Откроется страница оплаты RuKassa')
         setModal(null); setAmount('')
         loadTxs()
       }
     } catch (e) {
-      toast.error(e.response?.data?.error || 'Ошибка Lava')
+      toast.error(e.response?.data?.error || 'Ошибка RuKassa')
     }
     setWorking(false)
   }
@@ -224,7 +224,7 @@ export default function WalletPage() {
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:16 }}>
             {[
               { v:'crypto', icon:'🤖', label:'CryptoBot', desc:'USDT, TON, BTC' },
-              { v:'lava',   icon:'🔥', label:'Lava',      desc:'Карта РФ, СБП' },
+              { v:'rukassa', icon:'💳', label:'RuKassa',   desc:'Карта РФ, СБП' },
             ].map(m => (
               <button key={m.v} onClick={() => setPayMethod(m.v)} style={{ padding:'10px 8px', borderRadius:12, cursor:'pointer', textAlign:'center', background:payMethod===m.v?'rgba(167,139,250,0.12)':'rgba(255,255,255,0.03)', border:`1.5px solid ${payMethod===m.v?'rgba(167,139,250,0.5)':'rgba(255,255,255,0.07)'}`, color:payMethod===m.v?'#a78bfa':'var(--t3)', transition:'all 0.15s' }}>
                 <div style={{ fontSize:20, marginBottom:3 }}>{m.icon}</div>
@@ -242,12 +242,12 @@ export default function WalletPage() {
             <NetPicker value={network} onChange={setNetwork}/>
           </>}
           <InfoBox color="#a78bfa">
-            {payMethod === 'lava'
-              ? '🔥 Оплата картой РФ или СБП — откроется страница Lava, баланс зачислится автоматически'
+            {payMethod === 'rukassa'
+              ? '💳 Оплата картой РФ или СБП — откроется страница RuKassa, баланс зачислится автоматически'
               : 'Нажмите «Пополнить» → откроется @CryptoBot → оплатите → баланс зачислится автоматически'}
           </InfoBox>
           <ModalBtns onCancel={() => { setModal(null); setAmount('') }}
-            onConfirm={payMethod === 'lava' ? depositLava : deposit}
+            onConfirm={payMethod === 'rukassa' ? depositRukassa : deposit}
             confirmLabel="↓ Пополнить" confirmCls="btn-violet" loading={working}/>
         </BottomModal>
       )}
