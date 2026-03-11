@@ -1,0 +1,44 @@
+name: 🤖 AI Auto Review — GIVIHUB
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 09:00 МСК
+    - cron: '0 11 * * *'  # 14:00 МСК
+    - cron: '0 17 * * *'  # 20:00 МСК
+  workflow_dispatch:
+
+jobs:
+  ai-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Collect frontend code
+        id: code
+        run: |
+          # Собираем ключевые файлы фронтенда
+          CSS=$(cat frontend/src/styles/global.css 2>/dev/null | head -c 3000)
+          LAYOUT=$(cat frontend/src/components/Layout.jsx 2>/dev/null | head -c 2000)
+          HOME=$(cat frontend/src/pages/HomePage.jsx 2>/dev/null | head -c 2000)
+          APP=$(cat frontend/src/App.jsx 2>/dev/null | head -c 1000)
+          
+          PAYLOAD=$(jq -n \
+            --arg css "$CSS" \
+            --arg layout "$LAYOUT" \
+            --arg home "$HOME" \
+            --arg app "$APP" \
+            --arg repo "${{ github.repository }}" \
+            --arg run "${{ github.run_id }}" \
+            '{repo: $repo, run_id: $run, css: $css, layout: $layout, home: $home, app: $app}')
+          
+          echo "PAYLOAD<<EOF" >> $GITHUB_ENV
+          echo "$PAYLOAD" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Trigger Make.com
+        run: |
+          curl -s -X POST "${{ secrets.MAKE_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
+          echo "✅ Make.com triggered successfully"
+
