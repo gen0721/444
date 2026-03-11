@@ -290,18 +290,17 @@ router.get('/balance', auth, async (req, res) => {
   } catch { res.status(500).json({ error: 'Не удалось загрузить баланс' }); }
 });
 
-// ─── POST /deposit/lava — create Lava invoice ─────────────────────────────────
-router.post('/deposit/lava', auth, async (req, res) => {
+// ─── POST /deposit/rukassa — create RuKassa invoice ──────────────────────────
+router.post('/deposit/rukassa', auth, async (req, res) => {
   try {
-    const lava = require('../utils/lava');
-    if (!lava.isConfigured()) return res.status(400).json({ error: 'Lava не подключён' });
+    const rukassa = require('../utils/rukassa');
+    if (!rukassa.isConfigured()) return res.status(400).json({ error: 'RuKassa не подключён' });
 
     const { amount } = req.body;
     const amt = parseFloat(amount);
     if (!amt || amt < 1) return res.status(400).json({ error: 'Минимальный депозит — $1' });
 
-    // Convert USD → RUB (approximate, Lava works in RUB)
-    // Fetch live rate or use fixed fallback
+    // Convert USD → RUB (approximate, RuKassa works in RUB)
     let rubAmt;
     try {
       const rateRes = await new Promise((resolve, reject) => {
@@ -316,12 +315,12 @@ router.post('/deposit/lava', auth, async (req, res) => {
       rubAmt = Math.ceil(amt * 90); // fallback rate
     }
 
-    const orderId  = `lava_${req.userId}_${Date.now()}`;
-    const baseUrl  = `https://${req.get('host')}`;
-    const hookUrl  = `${baseUrl}/api/wallet/webhook/lava`;
+    const orderId    = `rukassa_${req.userId}_${Date.now()}`;
+    const baseUrl    = `https://${req.get('host')}`;
+    const hookUrl    = `${baseUrl}/api/wallet/webhook/rukassa`;
     const successUrl = `${baseUrl}/`;
 
-    const result = await lava.createInvoice({
+    const result = await rukassa.createInvoice({
       amount:     rubAmt,
       orderId,
       comment:    `GIVIHUB пополнение $${amt}`,
@@ -330,42 +329,41 @@ router.post('/deposit/lava', auth, async (req, res) => {
     });
 
     if (!result.ok) {
-      console.error('Lava createInvoice error:', result.error);
-      return res.status(500).json({ error: 'Ошибка Lava: ' + result.error });
+      console.error('RuKassa createInvoice error:', result.error);
+      return res.status(500).json({ error: 'Ошибка RuKassa: ' + result.error });
     }
 
     // Save pending transaction
     const txId = await insertTx({
-      userId:      req.userId,
-      type:        'deposit',
-      amount:      amt,
-      currency:    'RUB',
-      status:      'pending',
-      description: `Lava депозит ${rubAmt}₽ (orderId: ${orderId})`,
-      invoiceId:   orderId,
+      userId:       req.userId,
+      type:         'deposit',
+      amount:       amt,
+      currency:     'RUB',
+      status:       'pending',
+      description:  `RuKassa депозит ${rubAmt}₽ (orderId: ${orderId})`,
+      invoiceId:    orderId,
       balanceBefore: parseFloat(req.user.balance),
     });
 
     res.json({ ok: true, payUrl: result.payUrl, invoiceId: result.invoiceId, orderId, txId });
   } catch (e) {
-    console.error('Lava deposit error:', e.message);
+    console.error('RuKassa deposit error:', e.message);
     res.status(500).json({ error: 'Ошибка при создании платежа: ' + e.message });
   }
 });
 
-// ─── POST /webhook/lava — Lava payment callback ───────────────────────────────
-router.post('/webhook/lava', async (req, res) => {
+// ─── POST /webhook/rukassa — RuKassa payment callback ────────────────────────
+router.post('/webhook/rukassa', async (req, res) => {
   try {
-    const lava      = require('../utils/lava');
-    const signature = req.headers['signature'] || req.headers['x-signature'] || '';
+    const rukassa = require('../utils/rukassa');
 
-    if (!lava.verifyWebhook(req.body, signature)) {
-      console.warn('Lava webhook: invalid signature');
+    if (!rukassa.verifyWebhook(req.body)) {
+      console.warn('RuKassa webhook: invalid signature');
       return res.status(401).json({ error: 'Invalid signature' });
     }
 
-    const { status, order_id, amount } = req.body;
-    console.log('Lava webhook:', status, order_id);
+    const { status, order_id } = req.body;
+    console.log('RuKassa webhook:', status, order_id);
 
     if (status !== 'success') return res.json({ ok: true });
 
@@ -385,7 +383,7 @@ router.post('/webhook/lava', async (req, res) => {
       }, { transaction: dbTx });
       await tx.update({ status: 'completed', balanceAfter: newBal }, { transaction: dbTx });
       await dbTx.commit();
-      console.log(`✅ Lava payment credited: userId=${tx.userId} amount=${amt}`);
+      console.log(`✅ RuKassa payment credited: userId=${tx.userId} amount=${amt}`);
 
       const notify = require('../utils/notify');
       notify.notifyDeposit(user, amt, 'RUB').catch(() => {});
@@ -393,8 +391,8 @@ router.post('/webhook/lava', async (req, res) => {
 
     res.json({ ok: true });
   } catch (e) {
-    console.error('Lava webhook error:', e.message);
-    res.json({ ok: true }); // always 200 to Lava
+    console.error('RuKassa webhook error:', e.message);
+    res.json({ ok: true }); // always 200 to RuKassa
   }
 });
 
