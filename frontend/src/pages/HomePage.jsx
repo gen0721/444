@@ -164,6 +164,103 @@ export default function HomePage() {
             : products.map((p, i) => <ProductCard key={p.id} product={p} i={i} onClick={() => navigate(`/product/${p.id}`)}/>)
         }
       </div>
+
+      {/* ── КАТЕГОРИИ ОПИСАНИЕ ── */}
+      <div style={{ padding:'24px 14px 0' }}>
+        <div style={{ fontSize:'11px', fontFamily:'var(--font-display)', letterSpacing:'0.12em', color:'var(--t3)', marginBottom:'12px', fontWeight:700 }}>
+          ЧТО МОЖНО КУПИТЬ
+        </div>
+        <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+          {[
+            { emoji:'🕹️', title:'Игры и аккаунты', desc:'Лицензионные ключи активации Steam, Epic Games, PlayStation, Xbox. Готовые игровые аккаунты с прокачкой, скинами и балансом.' },
+            { emoji:'💻', title:'Программы и ПО', desc:'Лицензионные ключи для Windows, Office, антивирусов и другого программного обеспечения. Активация сразу после покупки.' },
+            { emoji:'📱', title:'Аккаунты соцсетей', desc:'Аккаунты Instagram, Telegram, TikTok, YouTube с подписчиками. Проверенные профили для бизнеса и продвижения.' },
+            { emoji:'⚡', title:'Услуги и буст', desc:'Прокачка персонажей, буст рейтинга, выполнение заданий в игре. Профессиональные игровые услуги от проверенных продавцов.' },
+            { emoji:'💎', title:'Игровая валюта', desc:'V-Bucks, Robux, UC, донат-монеты для любых игр. Быстрое пополнение на ваш аккаунт по выгодному курсу.' },
+          ].map(c => (
+            <div key={c.title} style={{
+              display:'flex', gap:'12px', alignItems:'flex-start',
+              padding:'12px 14px', borderRadius:'14px',
+              background:'rgba(255,255,255,0.02)',
+              border:'1px solid rgba(255,255,255,0.05)',
+            }}>
+              <span style={{ fontSize:'22px', flexShrink:0, marginTop:'2px' }}>{c.emoji}</span>
+              <div>
+                <div style={{ fontFamily:'var(--font-display)', fontSize:'13px', fontWeight:700, color:'var(--t1)', marginBottom:'4px' }}>{c.title}</div>
+                <div style={{ fontSize:'12px', color:'var(--t3)', lineHeight:'1.6' }}>{c.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── ФУТЕР ── */}
+      <div style={{ padding:'28px 14px 20px', marginTop:'24px', borderTop:'1px solid rgba(255,255,255,0.06)' }}>
+        {/* Logo */}
+        <div style={{ marginBottom:'16px' }}>
+          <div style={{
+            fontFamily:'var(--font-display)', fontSize:'20px', fontWeight:800,
+            background:'linear-gradient(135deg,#a78bfa,#7c6aff,#e040fb)',
+            WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent',
+            marginBottom:'4px',
+          }}>GIVIHUB</div>
+          <div style={{ fontSize:'11px', color:'var(--t3)', lineHeight:'1.6' }}>
+            Безопасный маркетплейс цифровых товаров и услуг. Все сделки защищены системой эскроу.
+          </div>
+        </div>
+
+        {/* Contacts */}
+        <div style={{ marginBottom:'16px' }}>
+          <div style={{ fontSize:'11px', fontFamily:'var(--font-display)', letterSpacing:'0.1em', color:'var(--t3)', marginBottom:'8px', fontWeight:700 }}>КОНТАКТЫ</div>
+          <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+            <a href="mailto:anvarikromov778@gmail.com" style={{ fontSize:'13px', color:'#a78bfa', textDecoration:'none', display:'flex', alignItems:'center', gap:'6px' }}>
+              📧 anvarikromov778@gmail.com
+            </a>
+            <a href="https://t.me/givi_hu" target="_blank" rel="noreferrer" style={{ fontSize:'13px', color:'#a78bfa', textDecoration:'none', display:'flex', alignItems:'center', gap:'6px' }}>
+              ✈️ @givi_hu
+            </a>
+          </div>
+        </div>
+
+        {/* Legal links */}
+        <div style={{ marginBottom:'16px' }}>
+          <div style={{ fontSize:'11px', fontFamily:'var(--font-display)', letterSpacing:'0.1em', color:'var(--t3)', marginBottom:'8px', fontWeight:700 }}>ДОКУМЕНТЫ</div>
+          <div style={{ display:'flex', flexWrap:'wrap', gap:'8px' }}>
+            {[
+              { path:'privacy',  label:'Политика конфиденциальности' },
+              { path:'offer',    label:'Договор оферты' },
+              { path:'refund',   label:'Условия возврата' },
+              { path:'contacts', label:'Контакты' },
+            ].map(l => (
+              <button key={l.path} onClick={() => navigate(`/legal/${l.path}`)} style={{
+                background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)',
+                borderRadius:'20px', padding:'6px 12px',
+                fontSize:'12px', color:'var(--t2)', cursor:'pointer',
+                fontFamily:'var(--font-display)', letterSpacing:'0.04em',
+                transition:'all 0.2s',
+              }}
+                onMouseEnter={e => { e.currentTarget.style.background='rgba(124,106,255,0.1)'; e.currentTarget.style.borderColor='rgba(124,106,255,0.3)'; e.currentTarget.style.color='#a78bfa' }}
+                onMouseLeave={e => { e.currentTarget.style.background='rgba(255,255,255,0.04)'; e.currentTarget.style.borderColor='rgba(255,255,255,0.08)'; e.currentTarget.style.color='var(--t2)' }}
+              >{l.label}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* Payment methods */}
+        <div style={{ marginBottom:'16px' }}>
+          <div style={{ fontSize:'11px', fontFamily:'var(--font-display)', letterSpacing:'0.1em', color:'var(--t3)', marginBottom:'8px', fontWeight:700 }}>СПОСОБЫ ОПЛАТЫ</div>
+          <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+            {['💳 Карты РФ', '📲 СБП', '₿ USDT', '💎 TON'].map(m => (
+              <span key={m} style={{ fontSize:'12px', color:'var(--t3)', background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:'8px', padding:'4px 10px' }}>{m}</span>
+            ))}
+          </div>
+        </div>
+
+        {/* Copyright */}
+        <div style={{ paddingTop:'14px', borderTop:'1px solid rgba(255,255,255,0.05)', textAlign:'center', fontSize:'11px', color:'var(--t4)' }}>
+          © 2026 GIVIHUB. Все права защищены.
+        </div>
+      </div>
     </div>
   )
 }
