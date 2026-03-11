@@ -21,7 +21,7 @@ export default function WalletPage() {
   const [working, setWorking] = useState(false)
   const rate = useRate()
 
-  const [payMethod, setPayMethod] = useState('crypto') // 'crypto' | 'rukassa'
+  const [payMethod, setPayMethod] = useState('crypto') // 'crypto' | 'rukassa' | 'cryptocloud'
 
   useEffect(() => {
     if (!user) { navigate('/auth'); return }
@@ -66,7 +66,24 @@ export default function WalletPage() {
     setWorking(false)
   }
 
-  // ── Deposit ──────────────────────────────────────────────────────────────
+  // ── Deposit via CryptoCloud ───────────────────────────────────────────────
+  const depositCryptoCloud = async () => {
+    const amt = parseFloat(amount)
+    if (!amt || amt < 1) return toast.error('Минимум $1')
+    setWorking(true)
+    try {
+      const { data } = await api.post('/wallet/deposit/cryptocloud', { amount: amt })
+      if (data.payUrl) {
+        window.open(data.payUrl, '_blank')
+        toast.success('Откроется страница оплаты CryptoCloud')
+        setModal(null); setAmount('')
+        loadTxs()
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.error || 'Ошибка CryptoCloud')
+    }
+    setWorking(false)
+  }
   const deposit = async () => {
     const amt = parseFloat(amount)
     if (!amt || amt < 1) return toast.error('Минимум $1')
@@ -221,10 +238,11 @@ export default function WalletPage() {
           <ModalTitle color="#a78bfa">↓ ПОПОЛНЕНИЕ</ModalTitle>
 
           {/* Payment method selector */}
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:16 }}>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8, marginBottom:16 }}>
             {[
-              { v:'crypto', icon:'🤖', label:'CryptoBot', desc:'USDT, TON, BTC' },
-              { v:'rukassa', icon:'💳', label:'RuKassa',   desc:'Карта РФ, СБП' },
+              { v:'crypto',      icon:'🤖', label:'CryptoBot',   desc:'USDT, TON, BTC' },
+              { v:'rukassa',     icon:'💳', label:'RuKassa',     desc:'Карта РФ, СБП' },
+              { v:'cryptocloud', icon:'☁️', label:'CryptoCloud', desc:'USDT, BTC, ETH' },
             ].map(m => (
               <button key={m.v} onClick={() => setPayMethod(m.v)} style={{ padding:'10px 8px', borderRadius:12, cursor:'pointer', textAlign:'center', background:payMethod===m.v?'rgba(167,139,250,0.12)':'rgba(255,255,255,0.03)', border:`1.5px solid ${payMethod===m.v?'rgba(167,139,250,0.5)':'rgba(255,255,255,0.07)'}`, color:payMethod===m.v?'#a78bfa':'var(--t3)', transition:'all 0.15s' }}>
                 <div style={{ fontSize:20, marginBottom:3 }}>{m.icon}</div>
@@ -244,10 +262,12 @@ export default function WalletPage() {
           <InfoBox color="#a78bfa">
             {payMethod === 'rukassa'
               ? '💳 Оплата картой РФ или СБП — откроется страница RuKassa, баланс зачислится автоматически'
+              : payMethod === 'cryptocloud'
+              ? '☁️ Оплата криптовалютой — USDT, BTC, ETH и другие, баланс зачислится автоматически'
               : 'Нажмите «Пополнить» → откроется @CryptoBot → оплатите → баланс зачислится автоматически'}
           </InfoBox>
           <ModalBtns onCancel={() => { setModal(null); setAmount('') }}
-            onConfirm={payMethod === 'rukassa' ? depositRukassa : deposit}
+            onConfirm={payMethod === 'rukassa' ? depositRukassa : payMethod === 'cryptocloud' ? depositCryptoCloud : deposit}
             confirmLabel="↓ Пополнить" confirmCls="btn-violet" loading={working}/>
         </BottomModal>
       )}
