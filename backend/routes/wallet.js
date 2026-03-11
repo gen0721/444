@@ -396,4 +396,92 @@ router.post('/webhook/rukassa', async (req, res) => {
   }
 });
 
+// ─── POST /deposit/cryptocloud — create CryptoCloud invoice ──────────────────
+router.post('/deposit/cryptocloud', auth, async (req, res) => {
+  try {
+    const cryptocloud = require('../utils/cryptocloud');
+    if (!cryptocloud.isConfigured()) return res.status(400).json({ error: 'CryptoCloud не подключён' });
+
+    const { amount } = req.body;
+    const amt = parseFloat(amount);
+    if (!amt || amt < 1) return res.status(400).json({ error: 'Минимальный депозит — $1' });
+
+    const orderId = `cc_${req.userId}_${Date.now()}`;
+
+    const result = await cryptocloud.createInvoice({
+      amount:  amt,
+      orderId,
+      email:   req.user.email || '',
+    });
+
+    if (!result.ok) {
+      console.error('CryptoCloud createInvoice error:', result.error);
+      return res.status(500).json({ error: 'Ошибка CryptoCloud: ' + result.error });
+    }
+
+    // Save pending transaction
+    const txId = await insertTx({
+      userId:       req.userId,
+      type:         'deposit',
+      amount:       amt,
+      currency:     'USDT',
+      status:       'pending',
+      description:  `CryptoCloud депозит $${amt} (orderId: ${orderId})`,
+      invoiceId:    orderId,
+      payUrl:       result.payUrl,
+      balanceBefore: parseFloat(req.user.balance),
+    });
+
+    res.json({ ok: true, payUrl: result.payUrl, invoiceId: result.invoiceId, orderId, txId });
+  } catch (e) {
+    console.error('CryptoCloud deposit error:', e.message);
+    res.status(500).json({ error: 'Ошибка при создании платежа: ' + e.message });
+  }
+});
+
+// ─── POST /webhook/cryptocloud — CryptoCloud postback ────────────────────────
+router.post('/webhook/cryptocloud', async (req, res) => {
+  try {
+    const cryptocloud = require('../utils/cryptocloud');
+
+    if (!cryptocloud.verifyWebhook(req.body)) {
+      console.warn('CryptoCloud webhook: invalid data');
+      return res.status(400).json({ error: 'Invalid data' });
+    }
+
+    const { status, order_id } = req.body;
+    console.log('CryptoCloud webhook:', status, order_id);
+
+    // CryptoCloud sends status 'success' when payment is confirmed
+    if (status !== 'success') return res.json({ ok: true });
+
+    // Find transaction by orderId
+    const tx = await Transaction.findOne({ where: { cryptoBotInvoiceId: order_id } });
+    if (!tx || tx.status === 'completed') return res.json({ ok: true });
+
+    // Credit user balance
+    const dbTx = await sequelize.transaction();
+    try {
+      const user   = await User.findByPk(tx.userId, { transaction: dbTx, lock: true });
+      const amt    = parseFloat(tx.amount);
+      const newBal = parseFloat(user.balance) + amt;
+      await user.update({
+        balance:        newBal,
+        totalDeposited: parseFloat(user.totalDeposited || 0) + amt,
+      }, { transaction: dbTx });
+      await tx.update({ status: 'completed', balanceAfter: newBal }, { transaction: dbTx });
+      await dbTx.commit();
+      console.log(`✅ CryptoCloud payment credited: userId=${tx.userId} amount=${amt}`);
+
+      const notify = require('../utils/notify');
+      notify.notifyDeposit(user, amt, 'USDT').catch(() => {});
+    } catch (e) { await dbTx.rollback(); throw e; }
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('CryptoCloud webhook error:', e.message);
+    res.json({ ok: true }); // always 200
+  }
+});
+
 module.exports = router;
