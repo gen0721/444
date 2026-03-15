@@ -300,28 +300,14 @@ router.post('/deposit/rukassa', auth, async (req, res) => {
     const amt = parseFloat(amount);
     if (!amt || amt < 1) return res.status(400).json({ error: 'Минимальный депозит — $1' });
 
-    // Convert USD → RUB (approximate, RuKassa works in RUB)
-    let rubAmt;
-    try {
-      const rateRes = await new Promise((resolve, reject) => {
-        const r = require('https').get('https://api.exchangerate-api.com/v4/latest/USD', res => {
-          let b = ''; res.on('data', c => b += c); res.on('end', () => { try { resolve(JSON.parse(b)); } catch { reject(new Error('parse')); } });
-        });
-        r.on('error', reject);
-      });
-      const usdRub = rateRes.rates?.RUB || 90;
-      rubAmt = Math.ceil(amt * usdRub);
-    } catch {
-      rubAmt = Math.ceil(amt * 90); // fallback rate
-    }
-
     const orderId    = `rukassa_${req.userId}_${Date.now()}`;
     const baseUrl    = `https://${req.get('host')}`;
     const hookUrl    = `${baseUrl}/api/wallet/webhook/rukassa`;
     const successUrl = `${baseUrl}/`;
 
+    // Передаём сумму в USD — rukassa.js настроен на currency: 'USD'
     const result = await rukassa.createInvoice({
-      amount:     rubAmt,
+      amount:     amt,
       orderId,
       comment:    `GIVIHUB пополнение $${amt}`,
       hookUrl,
@@ -338,9 +324,9 @@ router.post('/deposit/rukassa', auth, async (req, res) => {
       userId:       req.userId,
       type:         'deposit',
       amount:       amt,
-      currency:     'RUB',
+      currency:     'USD',
       status:       'pending',
-      description:  `RuKassa депозит ${rubAmt}₽ (orderId: ${orderId})`,
+      description:  `RuKassa депозит $${amt} (orderId: ${orderId})`,
       invoiceId:    orderId,
       balanceBefore: parseFloat(req.user.balance),
     });
