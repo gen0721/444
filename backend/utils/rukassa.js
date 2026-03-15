@@ -4,128 +4,88 @@
  */
 const https  = require('https');
 const crypto = require('crypto');
+const qs     = require('querystring');
 
-const RUKASSA_SHOP_ID  = () => process.env.RUKASSA_SHOP_ID  || '';
-const RUKASSA_SECRET   = () => process.env.RUKASSA_SECRET   || '';
+const RUKASSA_SHOP_ID = () => process.env.RUKASSA_SHOP_ID || '';
+const RUKASSA_TOKEN   = () => process.env.RUKASSA_TOKEN   || '';
 
-/**
- * Check if RuKassa is configured
- */
 function isConfigured() {
-  return !!(RUKASSA_SHOP_ID() && RUKASSA_SECRET());
+  return !!(RUKASSA_SHOP_ID() && RUKASSA_TOKEN());
 }
 
-/**
- * Generate MD5 hash signature for RuKassa
- * Format: MD5(shop_id:amount:order_id:secret_key)
- */
-function sign(shopId, amount, orderId) {
-  return crypto
-    .createHash('md5')
-    .update(`${shopId}:${amount}:${orderId}:${RUKASSA_SECRET()}`)
-    .digest('hex');
-}
-
-/**
- * Make a POST request to RuKassa API
- */
-function rukassaRequest(path, body) {
+// RuKassa принимает form-urlencoded — НЕ JSON
+function rukassaRequest(path, params) {
   return new Promise((resolve, reject) => {
-    const data = JSON.stringify(body);
-
-    const options = {
-      hostname: 'lk.rukassa.ru',
+    const data = qs.stringify(params);
+    const req  = https.request({
+      hostname: 'lk.rukassa.io',
       path,
-      method:  'POST',
+      method:   'POST',
       headers: {
-        'Content-Type':   'application/json',
-        'Accept':         'application/json',
+        'Content-Type':   'application/x-www-form-urlencoded',
         'Content-Length': Buffer.byteLength(data),
       },
-    };
-
-    const req = https.request(options, (res) => {
+    }, (res) => {
       let buf = '';
       res.on('data', chunk => buf += chunk);
       res.on('end', () => {
         try { resolve(JSON.parse(buf)); }
-        catch { resolve({ error: 'ParseError', data: null }); }
+        catch { resolve({ error: 'ParseError', raw: buf }); }
       });
     });
-
     req.on('error', reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('RuKassa request timeout')); });
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error('RuKassa timeout')); });
     req.write(data);
     req.end();
   });
 }
 
-/**
- * Create a RuKassa invoice
- * @param {object} params
- * @param {number}  params.amount     - Amount in RUB
- * @param {string}  params.orderId    - Unique order ID
- * @param {string}  params.comment    - Payment comment
- * @param {string}  params.hookUrl    - Webhook URL for payment notifications
- * @param {string}  params.successUrl - Redirect URL after payment
- * @param {string}  [params.method]   - Payment method: 'card', 'sbp', 'crypto' (optional)
- * @returns {Promise<{ok: boolean, payUrl?: string, invoiceId?: string, error?: string}>}
- */
-async function createInvoice({ amount, orderId, comment = '', hookUrl = '', successUrl = '', method = '' }) {
+async function createInvoice({ amount, orderId, comment = '', hookUrl = '', successUrl = '' }) {
   if (!isConfigured()) {
-    return { ok: false, error: 'RuKassa не настроен (RUKASSA_SHOP_ID / RUKASSA_SECRET)' };
+    return { ok: false, error: 'RuKassa не настроен (RUKASSA_SHOP_ID / RUKASSA_TOKEN)' };
   }
 
-  const shopId = RUKASSA_SHOP_ID();
-  const body = {
-    shop_id:     shopId,
-    order_id:    orderId,
-    amount:      String(amount),
-    hash:        sign(shopId, amount, orderId),
-    comment,
+  const numericOrderId = Date.now();
+  const parts    = String(orderId).split('_');
+  const userCode = parts.length >= 2 ? parts[1] : String(numericOrderId);
+
+  const params = {
+    shop_id:          parseInt(RUKASSA_SHOP_ID()),
+    token:            RUKASSA_TOKEN(),
+    order_id:         numericOrderId,
+    amount:           parseFloat(amount),
+    currency:         'USD',
+    user_code:        userCode,
+    data:             JSON.stringify({ original_order_id: String(orderId), comment: comment || '' }),
     notification_url: hookUrl,
     success_url:      successUrl,
     fail_url:         successUrl,
   };
 
-  if (method) body.method = method;
+  console.log('[RuKassa] createInvoice request:', JSON.stringify({ ...params, token: '***' }));
 
   try {
-    const res = await rukassaRequest('/api/v1/create', body);
+    const res = await rukassaRequest('/api/v1/create', params);
+    console.log('[RuKassa] response:', JSON.stringify(res));
 
-    if (res && res.link) {
-      return {
-        ok:        true,
-        payUrl:    res.link,
-        invoiceId: String(res.id || orderId),
-      };
-    }
-
-    const errMsg = res?.message || res?.error || 'Неизвестная ошибка RuKassa';
-    return { ok: false, error: errMsg };
-  } catch (e) {
+    if (res && res.url)  return { ok: true, payUrl: res.url,  invoiceId: String(res.id || numericOrderId) };
+    if (res && res.link) return { ok: true, payUrl: res.link, invoiceId: String(res.id || numericOrderId) };
+    return { ok: false, error: res?.message || res?.error || JSON.stringify(res) };
+  } catch(e) {
     return { ok: false, error: e.message };
   }
 }
 
-/**
- * Verify RuKassa webhook signature
- * RuKassa sends MD5(shop_id:amount:order_id:secret_key) in "sign" field of body
- * @param {object} body - Parsed request body
- * @returns {boolean}
- */
 function verifyWebhook(body) {
-  if (!RUKASSA_SECRET()) return false;
-
   try {
-    const { shop_id, amount, order_id, sign: receivedSign } = body;
-    if (!shop_id || !amount || !order_id || !receivedSign) return false;
-
-    const expected = sign(shop_id, amount, order_id);
-    return expected === receivedSign.toLowerCase();
-  } catch {
-    return false;
-  }
+    const { shop_id, amount, order_id, sign: s } = body;
+    if (!shop_id || !amount || !order_id || !s) return false;
+    const secret  = process.env.RUKASSA_SECRET || RUKASSA_TOKEN();
+    const expected = crypto.createHash('md5')
+      .update(`${shop_id}:${amount}:${order_id}:${secret}`)
+      .digest('hex');
+    return expected === s.toLowerCase();
+  } catch { return false; }
 }
 
-module.exports = { isConfigured, createInvoice, verifyWebhook, sign };
+module.exports = { isConfigured, createInvoice, verifyWebhook };
