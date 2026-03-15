@@ -259,6 +259,47 @@ export default function WalletPage() {
             <FieldLabel>ВАЛЮТА</FieldLabel>
             <NetPicker value={network} onChange={setNetwork}/>
           </>}
+          {/* Минимальные депозиты */}
+          {payMethod === 'rukassa' && (
+            <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:12, padding:'12px 14px', marginBottom:12 }}>
+              <div style={{ fontSize:10, fontWeight:700, color:'var(--t3)', letterSpacing:'0.1em', marginBottom:8 }}>МИНИМАЛЬНЫЙ ДЕПОЗИТ</div>
+              {[
+                ['💳', 'Visa / MC / МИР', '$100.00'],
+                ['💳', 'Visa / MC (AZN)', '$5.50'],
+                ['🎮', 'SkinPay', '$0.10'],
+                ['💛', 'YooMoney', '$11.00'],
+                ['🔐', 'Крипта', '$0.50'],
+              ].map(([icon, label, min]) => (
+                <div key={label} style={{ display:'flex', justifyContent:'space-between', padding:'4px 0', borderBottom:'1px solid rgba(255,255,255,0.05)' }}>
+                  <span style={{ fontSize:12, color:'rgba(255,255,255,0.5)' }}>{icon} {label}</span>
+                  <span style={{ fontSize:12, fontWeight:700, color:'#a78bfa' }}>{min}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {payMethod === 'cryptocloud' && (
+            <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:12, padding:'12px 14px', marginBottom:12 }}>
+              <div style={{ fontSize:10, fontWeight:700, color:'var(--t3)', letterSpacing:'0.1em', marginBottom:8 }}>МИНИМАЛЬНЫЙ ДЕПОЗИТ</div>
+              {[['💎','USDT','$1.00'],['₿','BTC','$1.00'],['🔹','ETH','$1.00']].map(([icon, label, min]) => (
+                <div key={label} style={{ display:'flex', justifyContent:'space-between', padding:'4px 0', borderBottom:'1px solid rgba(255,255,255,0.05)' }}>
+                  <span style={{ fontSize:12, color:'rgba(255,255,255,0.5)' }}>{icon} {label}</span>
+                  <span style={{ fontSize:12, fontWeight:700, color:'#a78bfa' }}>{min}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {payMethod === 'crypto' && (
+            <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:12, padding:'12px 14px', marginBottom:12 }}>
+              <div style={{ fontSize:10, fontWeight:700, color:'var(--t3)', letterSpacing:'0.1em', marginBottom:8 }}>МИНИМАЛЬНЫЙ ДЕПОЗИТ</div>
+              {[['💎','USDT','$1.00'],['🔷','TON','$1.00'],['₿','BTC','$1.00']].map(([icon, label, min]) => (
+                <div key={label} style={{ display:'flex', justifyContent:'space-between', padding:'4px 0', borderBottom:'1px solid rgba(255,255,255,0.05)' }}>
+                  <span style={{ fontSize:12, color:'rgba(255,255,255,0.5)' }}>{icon} {label}</span>
+                  <span style={{ fontSize:12, fontWeight:700, color:'#a78bfa' }}>{min}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
           <InfoBox color="#a78bfa">
             {payMethod === 'rukassa'
               ? '💳 Оплата картой РФ или СБП — откроется страница RuKassa, баланс зачислится автоматически'
